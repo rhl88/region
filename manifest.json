@@ -1,0 +1,45 @@
+{
+    "id": "cmspro.region",
+    "name": "中国行政区划",
+    "description": "中国行政区划数据服务，支持省、市、区县三级联动及街道四级可选，提供API供其他应用调用",
+    "version": "1.0.1",
+    "author": "CmsPro",
+    "icon": "fa fa-map-marker",
+    "require": {
+        "php": ">=8.3",
+        "cmspro": ">=5.0.0"
+    },
+    "providers": [
+        "ServiceProvider"
+    ],
+    "install": "Install",
+    "hooks": "Hooks",
+    "menus": [
+        {
+            "title": "行政区划",
+            "icon": "fa fa-map-marker",
+            "path": "/admin/cmspro/regions",
+            "code": "admin_cmspro_region_groups",
+            "order": 100,
+            "children": [
+                {
+                    "title": "数据管理",
+                    "icon": "fa fa-database",
+                    "path": "/admin/cmspro/region",
+                    "code": "admin_cmspro_region",
+                    "order": 1
+                }
+            ]
+        }
+    ],
+    "permissions": [
+        {
+            "code": "cmspro.region.manage",
+            "name": "区划管理"
+        },
+        {
+            "code": "cmspro.region.import",
+            "name": "数据导入"
+        }
+    ]
+}

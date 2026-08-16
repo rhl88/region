@@ -1,0 +1,8 @@
+# CmsproRegion 应用导出排除规则
+# 参考：docs/CmsPro-v5-应用开发文档.md § 排除规则（.exportignore）
+
+# 版本控制
+.git/
+
+# 测试
+Tests/
