@@ -41,5 +41,18 @@
             "code": "cmspro.region.import",
             "name": "数据导入"
         }
+    ],
+    "runtime_files": [
+        {
+            "key": "region_data",
+            "name": "行政区划数据文件",
+            "dir": "app/Apps/CmsproRegion/Data",
+            "type": "ipdb",
+            "description": "从 GitHub 下载的行政区划数据源（list.json 及区县街道 code/*.json），可重新下载生成",
+            "cleanable": true,
+            "strategy": "manual",
+            "pattern": ["list.json", "code/*.json"],
+            "protected": false
+        }
     ]
 }
