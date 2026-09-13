@@ -38,6 +38,10 @@ class OneKeyUpdateTest extends RegionTestCase
             ->assertSee('startOneKeyUpdate', false)
             ->assertSee('runOneKeyStep1', false)
             ->assertSee('runOneKeyStep4', false)
+            // 一键导入按钮（与一键数据更新共用同一套串联链路）
+            ->assertSee('oneKeyImportBtn', false)
+            ->assertSee('一键导入', false)
+            ->assertSee('triggerOneKeyRun', false)
             // 悬停下拉菜单（收纳五个单项导入入口）
             ->assertSee('one-key-menu', false)
             ->assertSee('data-btn="importBtn"', false)

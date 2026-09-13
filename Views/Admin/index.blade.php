@@ -58,7 +58,8 @@
     <div class="layui-card" style="margin-top:15px;">
         <div class="layui-card-body">
             <div style="margin-bottom:15px;">
-                {{-- 主按钮：单击执行一键更新；悬停弹出下拉菜单显示各阶段独立导入入口 --}}
+                {{-- 主按钮：单击执行一键导入/一键更新（同一套四阶段串联链路）；悬停弹出下拉菜单显示各阶段独立导入入口 --}}
+                <button class="layui-btn" id="oneKeyImportBtn" style="background:#1e9fff;"><i class="fa fa-cloud-download"></i> 一键导入</button>
                 <div class="one-key-wrap">
                     <button class="layui-btn" id="oneKeyUpdateBtn" style="background:#16b777;"><i class="fa fa-bolt"></i> 一键数据更新</button>
                     <div class="one-key-menu">
@@ -163,10 +164,10 @@
                 <div class="import-log" id="hmtImportLog"></div>
             </div>
 
-            {{-- 一键数据更新进度（四阶段串联） --}}
+            {{-- 一键导入/一键数据更新进度（共用四阶段串联链路） --}}
             <div class="import-progress" id="oneKeyProgress" style="display:none;">
                 <div style="display:flex;align-items:center;justify-content:space-between;">
-                    <span id="oneKeyText">正在准备一键数据更新...</span>
+                    <span id="oneKeyText">正在准备一键导入...</span>
                     <div>
                         <span id="oneKeyCount"></span>
                         <button type="button" id="closeOneKeyProgressBtn" style="margin-left:10px;background:none;border:none;cursor:pointer;font-size:16px;color:#999;" title="关闭">&times;</button>
@@ -1394,16 +1395,16 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         if(fn) fn();
     });
 
-    // 运行态互斥同步：任一导入任务运行时，禁用主按钮 + 下拉菜单；全部空闲时恢复
+    // 运行态互斥同步：任一导入任务运行时，禁用两个主按钮 + 下拉菜单；全部空闲时恢复
     function syncOneKeyMenuState(){
         var busy = level3ImportRunning || streetImportRunning || geoImportRunning
             || geojsonImportRunning || updateRunning || hmtImportRunning || oneKeyRunning;
         var items = $('.one-key-menu-item');
         if(busy){
-            $('#oneKeyUpdateBtn').addClass('layui-btn-disabled').prop('disabled', true);
+            $('#oneKeyUpdateBtn, #oneKeyImportBtn').addClass('layui-btn-disabled').prop('disabled', true);
             items.addClass('layui-btn-disabled');
         } else {
-            $('#oneKeyUpdateBtn').removeClass('layui-btn-disabled').prop('disabled', false);
+            $('#oneKeyUpdateBtn, #oneKeyImportBtn').removeClass('layui-btn-disabled').prop('disabled', false);
             items.removeClass('layui-btn-disabled');
         }
     }
@@ -1420,9 +1421,11 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     var oneKeyL3Inserted = 0;          // 三级阶段累计新增
     var oneKeyL3Updated = 0;           // 三级阶段累计更新
 
-    $('#oneKeyUpdateBtn').on('click', function(){
+    // 一键导入 / 一键数据更新：共用同一套四阶段串联链路（三级区划 → 港澳台补全 → 街道数据 → 最新坐标），
+    // 仅入口确认框与进度文案的标题不同
+    function triggerOneKeyRun(source){
         if(oneKeyRunning){
-            layer.msg('一键数据更新正在执行中，请等待完成', {icon: 0});
+            layer.msg('任务正在执行中，请等待完成', {icon: 0});
             return;
         }
         if(level3ImportRunning || streetImportRunning || geoImportRunning || geojsonImportRunning || updateRunning || hmtImportRunning){
@@ -1430,24 +1433,40 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
             return;
         }
 
+        var isImport = (source === 'import');
+        var title = isImport ? '一键导入' : '一键数据更新';
+        var btnText = isImport ? '开始导入' : '开始更新';
+        var tipText = isImport
+            ? '首次导入全量数据，街道阶段为大头，耗时最长'
+            : '增量更新已有数据，全程预计耗时较长（街道阶段为大头）';
+
         layer.confirm(
-            '<span style="color:#e6a23c;font-weight:bold;">⚠ 一键数据更新（全在线源）</span><br><br>' +
+            '<span style="color:#e6a23c;font-weight:bold;">⚠ ' + title + '（全在线源）</span><br><br>' +
             '将按顺序自动执行四个阶段（需联网）：<br>' +
             '① 三级区划：从民政部 API 逐省更新省/市/区县<br>' +
             '② 港澳台补全：从阿里 DataV 修正台湾编码、补全港澳区级<br>' +
             '③ 街道数据：逐区县拉取（约4万+条，耗时最长）<br>' +
             '④ 最新坐标：从阿里 DataV 逐省更新坐标<br><br>' +
-            '<span style="color:#e6a23c;">全程预计耗时较长（街道阶段为大头），执行期间请不要关闭或刷新页面。</span><br><br>' +
+            '<span style="color:#e6a23c;">' + tipText + '，执行期间请不要关闭或刷新页面。</span><br><br>' +
             '确定要开始吗？',
-            {icon: 3, title: '一键数据更新', btn: ['开始更新', '取消']},
+            {icon: 3, title: title, btn: [btnText, '取消']},
             function(index){
                 layer.close(index);
-                startOneKeyUpdate();
+                startOneKeyUpdate(title);
             }
         );
+    }
+
+    $('#oneKeyUpdateBtn').on('click', function(){
+        triggerOneKeyRun('update');
     });
 
-    function startOneKeyUpdate(){
+    $('#oneKeyImportBtn').on('click', function(){
+        triggerOneKeyRun('import');
+    });
+
+    function startOneKeyUpdate(title){
+        title = title || '一键数据更新';
         oneKeyRunning = true;
         oneKeyFailedDistricts = [];
         oneKeyFailedGeoProvinces = [];
@@ -1459,7 +1478,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         oneKeyL3Index = 0;
         oneKeyL3Inserted = 0;
         oneKeyL3Updated = 0;
-        $('#oneKeyUpdateBtn').addClass('layui-btn-disabled').prop('disabled', true);
+        $('#oneKeyUpdateBtn, #oneKeyImportBtn').addClass('layui-btn-disabled').prop('disabled', true);
         // 禁用其余全部按钮与下拉菜单项，避免并发冲突
         $('#importBtn, #importStreetBtn, #importGeoBtn, #importGeojsonBtn, #importHmtBtn, #updateDataBtn')
             .addClass('layui-btn-disabled').prop('disabled', true);
@@ -1468,11 +1487,11 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         $('#oneKeyProgress').show();
         $('#oneKeyImportLog').html('');
         $('#oneKeyCount').text('');
-        $('#oneKeyText').text('正在准备一键数据更新...');
+        $('#oneKeyText').text('正在准备' + title + '...');
         element.progress('oneKeyImportProgress', '0%');
         resetOneKeySteps();
 
-        appendOneKeyLog('【开始】一键数据更新，共 4 个阶段');
+        appendOneKeyLog('【开始】' + title + '，共 4 个阶段');
         setTimeout(runOneKeyStep1, 100);
     }
 
@@ -1503,17 +1522,17 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
 
     function finishOneKeyUpdate(errorMsg){
         setOneKeyProgress(100);
-        $('#oneKeyUpdateBtn').removeClass('layui-btn-disabled').prop('disabled', false);
+        $('#oneKeyUpdateBtn, #oneKeyImportBtn').removeClass('layui-btn-disabled').prop('disabled', false);
         $('#importBtn, #importStreetBtn, #importGeoBtn, #importGeojsonBtn, #importHmtBtn, #updateDataBtn')
             .removeClass('layui-btn-disabled').prop('disabled', false);
         $('.one-key-menu-item').removeClass('layui-btn-disabled');
         syncOneKeyMenuState();
 
         if(errorMsg){
-            $('#oneKeyText').text('一键数据更新失败');
+            $('#oneKeyText').text(title + '失败');
             appendOneKeyLog('<span style="color:red;">✗ ' + errorMsg + '</span>');
         } else {
-            $('#oneKeyText').text('一键数据更新完成！');
+            $('#oneKeyText').text(title + '完成！');
             setOneKeyProgress(100);
             appendOneKeyLog('【结束】全部阶段执行完毕');
         }
