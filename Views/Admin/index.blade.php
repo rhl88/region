@@ -50,12 +50,12 @@
                 <button class="layui-btn layui-btn-normal" id="importBtn"><i class="fa fa-download"></i> 导入三级数据</button>
                 <button class="layui-btn" id="importStreetBtn"><i class="fa fa-building"></i> 导入街道数据</button>
                 <button class="layui-btn layui-btn-success" id="importGeoBtn"><i class="fa fa-map-marker"></i> 导入地理位置</button>
-                <button class="layui-btn" id="importGeojsonBtn"><i class="fa fa-globe"></i> 在线更新坐标(GeoJSON)</button>
+                <button class="layui-btn" id="importGeojsonBtn"><i class="fa fa-globe"></i> 更新坐标</button>
                 <button class="layui-btn layui-btn-warm" id="clearCacheBtn"><i class="fa fa-refresh"></i> 清除缓存</button>
                 <div class="layui-inline" style="margin-left:20px;">
-                    <label class="layui-form-label" style="width:auto;padding:0 10px;">层级筛选</label>
-                    <div class="layui-input-inline" style="width:120px;">
-                        <select id="levelFilter">
+                    <label class="layui-form-label" style="width:auto;">层级</label>
+                    <div class="layui-input-inline layui-form" style="width:120px;margin-top: unset;">
+                        <select id="levelFilter" lay-filter="levelFilter">
                             <option value="">全部</option>
                             <option value="1">省/直辖市</option>
                             <option value="2">市</option>
@@ -161,6 +161,9 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     $.ajaxSetup({
         headers: { 'X-CSRF-TOKEN': '{{ csrf_token() }}' }
     });
+
+    // 渲染层级筛选下拉框（layui 美化）
+    form.render('select');
 
     var levelNames = {1:'省/直辖市', 2:'市', 3:'区/县', 4:'街道/乡镇'};
 
