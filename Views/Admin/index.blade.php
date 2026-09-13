@@ -20,6 +20,14 @@
         .one-key-step{display:inline-block;margin-right:14px;padding:2px 10px;border-radius:10px;background:#f2f2f2;color:#999;}
         .one-key-step.active{background:#16b777;color:#fff;}
         .one-key-step.done{background:#e1f3d8;color:#67c23a;}
+        /* 一键数据更新悬停下拉菜单 */
+        .one-key-wrap{display:inline-block;position:relative;}
+        .one-key-menu{display:none;position:absolute;top:100%;left:0;z-index:9999;min-width:190px;background:#fff;border:1px solid #e6e6e6;border-radius:4px;box-shadow:0 2px 12px rgba(0,0,0,.15);padding:5px 0;}
+        .one-key-wrap:hover .one-key-menu{display:block;}
+        .one-key-menu-title{padding:6px 15px;font-size:12px;color:#999;border-bottom:1px solid #f2f2f2;margin-bottom:4px;}
+        .one-key-menu-item{padding:8px 15px;font-size:13px;color:#333;cursor:pointer;white-space:nowrap;}
+        .one-key-menu-item:hover{background:#f2f2f2;color:#16b777;}
+        .one-key-menu-item.layui-btn-disabled{color:#ccc;cursor:not-allowed;background:#fff;}
     </style>
 </head>
 <body>
@@ -50,12 +58,18 @@
     <div class="layui-card" style="margin-top:15px;">
         <div class="layui-card-body">
             <div style="margin-bottom:15px;">
-                <button class="layui-btn" id="oneKeyUpdateBtn" style="background:#16b777;"><i class="fa fa-bolt"></i> 一键数据更新</button>
-                <button class="layui-btn layui-btn-normal" id="importBtn"><i class="fa fa-download"></i> 导入三级数据</button>
-                <button class="layui-btn" id="importStreetBtn"><i class="fa fa-building"></i> 导入街道数据</button>
-                <button class="layui-btn layui-btn-success" id="importGeoBtn"><i class="fa fa-map-marker"></i> 导入地理位置</button>
-                <button class="layui-btn" id="importGeojsonBtn"><i class="fa fa-globe"></i> 更新坐标</button>
-                <button class="layui-btn layui-btn-danger" id="importHmtBtn"><i class="fa fa-flag"></i> 补全港澳台</button>
+                {{-- 主按钮：单击执行一键更新；悬停弹出下拉菜单显示各阶段独立导入入口 --}}
+                <div class="one-key-wrap">
+                    <button class="layui-btn" id="oneKeyUpdateBtn" style="background:#16b777;"><i class="fa fa-bolt"></i> 一键数据更新</button>
+                    <div class="one-key-menu">
+                        <div class="one-key-menu-title">数据更新（手动执行单项）</div>
+                        <div class="one-key-menu-item" data-btn="importBtn"><i class="fa fa-download"></i> 导入三级数据</div>
+                        <div class="one-key-menu-item" data-btn="importStreetBtn"><i class="fa fa-building"></i> 导入街道数据</div>
+                        <div class="one-key-menu-item" data-btn="importGeoBtn"><i class="fa fa-map-marker"></i> 导入地理位置</div>
+                        <div class="one-key-menu-item" data-btn="importGeojsonBtn"><i class="fa fa-globe"></i> 更新坐标</div>
+                        <div class="one-key-menu-item" data-btn="importHmtBtn"><i class="fa fa-flag"></i> 补全港澳台</div>
+                    </div>
+                </div>
                 <button class="layui-btn layui-btn-warm" id="clearCacheBtn"><i class="fa fa-refresh"></i> 清除缓存</button>
                 <div class="layui-inline" style="margin-left:20px;">
                     <label class="layui-form-label" style="width:auto;">层级</label>
@@ -247,7 +261,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
 
     // 导入三级数据（AJAX分步）
     var level3ImportRunning = false;
-    $('#importBtn').on('click', function(){
+    function triggerLevel3Import(){
         if(level3ImportRunning){
             layer.msg('数据正在导入中，请等待完成', {icon: 0});
             return;
@@ -257,11 +271,13 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
             layer.close(index);
             startLevel3Import();
         });
-    });
+    }
+    $('#importBtn').on('click', triggerLevel3Import);
 
     function startLevel3Import(){
         level3ImportRunning = true;
         $('#importBtn').addClass('layui-btn-disabled').prop('disabled', true);
+        syncOneKeyMenuState();
         $('#level3Progress').show();
         $('#level3Log').html('');
         element.progress('level3ImportProgress', '0%');
@@ -356,12 +372,13 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     function resetLevel3Import(){
         level3ImportRunning = false;
         $('#importBtn').removeClass('layui-btn-disabled').prop('disabled', false);
+        syncOneKeyMenuState();
         $('#level3Progress').hide();
     }
 
     // 导入街道数据（AJAX分步）
     var streetImportRunning = false;
-    $('#importStreetBtn').on('click', function(){
+    function triggerStreetImport(){
         if(streetImportRunning){
             layer.msg('街道数据正在导入中，请等待完成', {icon: 0});
             return;
@@ -371,7 +388,8 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
             layer.close(index);
             startStreetImport();
         });
-    });
+    }
+    $('#importStreetBtn').on('click', triggerStreetImport);
 
     function startStreetImport(){
         if(level3ImportRunning){
@@ -380,6 +398,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         }
         streetImportRunning = true;
         $('#importStreetBtn').addClass('layui-btn-disabled').prop('disabled', true);
+        syncOneKeyMenuState();
         $('#streetProgress').show();
         $('#importLog').html('');
         element.progress('streetImportProgress', '0%');
@@ -561,6 +580,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     function resetStreetImport(){
         streetImportRunning = false;
         $('#importStreetBtn').removeClass('layui-btn-disabled').prop('disabled', false);
+        syncOneKeyMenuState();
     }
 
     // 带重试的 AJAX 请求（指数退避：1s, 2s, 4s...）
@@ -646,6 +666,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         $('#updateDataBtn').addClass('layui-btn-disabled').prop('disabled', true);
         $('#importBtn').addClass('layui-btn-disabled').prop('disabled', true);
         $('#importStreetBtn').addClass('layui-btn-disabled').prop('disabled', true);
+        syncOneKeyMenuState();
         $('#downloadProgress').show();
         $('#updateLog').html('');
         element.progress('updateProgress', '0%');
@@ -859,6 +880,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         $('#updateDataBtn').removeClass('layui-btn-disabled').prop('disabled', false);
         $('#importBtn').removeClass('layui-btn-disabled').prop('disabled', false);
         $('#importStreetBtn').removeClass('layui-btn-disabled').prop('disabled', false);
+        syncOneKeyMenuState();
 
         if(errorMsg){
             appendUpdateLog('<span style="color:red;">✗ ' + errorMsg + '</span>');
@@ -941,7 +963,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
 
     // 导入地理位置数据（AJAX分步导入）
     var geoImportRunning = false;
-    $('#importGeoBtn').on('click', function(){
+    function triggerGeoImport(){
         if(geoImportRunning){
             layer.msg('地理位置数据正在导入中，请等待完成', {icon: 0});
             return;
@@ -959,7 +981,8 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                 startGeoImport();
             }
         );
-    });
+    }
+    $('#importGeoBtn').on('click', triggerGeoImport);
 
     function startGeoImport(){
         if(level3ImportRunning || streetImportRunning || updateRunning){
@@ -968,6 +991,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         }
         geoImportRunning = true;
         $('#importGeoBtn').addClass('layui-btn-disabled').prop('disabled', true);
+        syncOneKeyMenuState();
         $('#geoProgress').show();
         $('#geoImportLog').html('');
         element.progress('geoImportProgress', '0%');
@@ -1086,12 +1110,13 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     function resetGeoImport(){
         geoImportRunning = false;
         $('#importGeoBtn').removeClass('layui-btn-disabled').prop('disabled', false);
+        syncOneKeyMenuState();
         $('#geoProgress').hide();
     }
 
     // GeoJSON 在线更新坐标（geojson.cn，分省AJAX导入）
     var geojsonImportRunning = false;
-    $('#importGeojsonBtn').on('click', function(){
+    function triggerGeojsonImport(){
         if(geojsonImportRunning){
             layer.msg('在线坐标更新正在执行中，请等待完成', {icon: 0});
             return;
@@ -1109,7 +1134,8 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                 startGeojsonImport();
             }
         );
-    });
+    }
+    $('#importGeojsonBtn').on('click', triggerGeojsonImport);
 
     function startGeojsonImport(){
         if(geoImportRunning || level3ImportRunning || streetImportRunning || updateRunning){
@@ -1118,6 +1144,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         }
         geojsonImportRunning = true;
         $('#importGeojsonBtn').addClass('layui-btn-disabled').prop('disabled', true);
+        syncOneKeyMenuState();
         $('#geojsonProgress').show();
         $('#geojsonImportLog').html('');
         element.progress('geojsonImportProgress', '0%');
@@ -1251,12 +1278,13 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     function resetGeojsonImport(){
         geojsonImportRunning = false;
         $('#importGeojsonBtn').removeClass('layui-btn-disabled').prop('disabled', false);
+        syncOneKeyMenuState();
         $('#geojsonProgress').hide();
     }
 
     // 港澳台区划补全（阿里 DataV 源：修台湾脏编码 + 补香港18区/澳门8区）
     var hmtImportRunning = false;
-    $('#importHmtBtn').on('click', function(){
+    function triggerHmtImport(){
         if(hmtImportRunning){
             layer.msg('港澳台补全正在执行中，请等待完成', {icon: 0});
             return;
@@ -1277,7 +1305,8 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                 startHmtImport();
             }
         );
-    });
+    }
+    $('#importHmtBtn').on('click', triggerHmtImport);
 
     function startHmtImport(){
         if(geoImportRunning || level3ImportRunning || streetImportRunning || updateRunning || geojsonImportRunning){
@@ -1286,6 +1315,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         }
         hmtImportRunning = true;
         $('#importHmtBtn').addClass('layui-btn-disabled').prop('disabled', true);
+        syncOneKeyMenuState();
         $('#hmtProgress').show();
         $('#hmtImportLog').html('');
         $('#hmtProgressText').text('正在拉取港澳台数据（阿里 DataV）...');
@@ -1342,10 +1372,42 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     function resetHmtImport(){
         hmtImportRunning = false;
         $('#importHmtBtn').removeClass('layui-btn-disabled').prop('disabled', false);
+        syncOneKeyMenuState();
         $('#hmtProgress').hide();
     }
 
     // 一键数据更新（四阶段串联：三级区划 → 港澳台补全 → 街道数据 → 最新坐标）
+    // 下拉菜单项点击 → 调用对应功能的入口函数（与原按钮逻辑完全一致）
+    var oneKeyMenuTriggers = {
+        'importBtn': triggerLevel3Import,
+        'importStreetBtn': triggerStreetImport,
+        'importGeoBtn': triggerGeoImport,
+        'importGeojsonBtn': triggerGeojsonImport,
+        'importHmtBtn': triggerHmtImport
+    };
+    $('.one-key-menu-item').on('click', function(){
+        if($(this).hasClass('layui-btn-disabled')){
+            layer.msg('任务执行中，请等待完成', {icon: 0});
+            return;
+        }
+        var fn = oneKeyMenuTriggers[$(this).data('btn')];
+        if(fn) fn();
+    });
+
+    // 运行态互斥同步：任一导入任务运行时，禁用主按钮 + 下拉菜单；全部空闲时恢复
+    function syncOneKeyMenuState(){
+        var busy = level3ImportRunning || streetImportRunning || geoImportRunning
+            || geojsonImportRunning || updateRunning || hmtImportRunning || oneKeyRunning;
+        var items = $('.one-key-menu-item');
+        if(busy){
+            $('#oneKeyUpdateBtn').addClass('layui-btn-disabled').prop('disabled', true);
+            items.addClass('layui-btn-disabled');
+        } else {
+            $('#oneKeyUpdateBtn').removeClass('layui-btn-disabled').prop('disabled', false);
+            items.removeClass('layui-btn-disabled');
+        }
+    }
+
     var oneKeyRunning = false;
     var oneKeyFailedDistricts = [];   // 街道阶段失败区县（重试用）
     var oneKeyFailedGeoProvinces = []; // 坐标阶段失败省份（重试用）
@@ -1398,9 +1460,11 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         oneKeyL3Inserted = 0;
         oneKeyL3Updated = 0;
         $('#oneKeyUpdateBtn').addClass('layui-btn-disabled').prop('disabled', true);
-        // 禁用其余全部按钮，避免并发冲突
+        // 禁用其余全部按钮与下拉菜单项，避免并发冲突
         $('#importBtn, #importStreetBtn, #importGeoBtn, #importGeojsonBtn, #importHmtBtn, #updateDataBtn')
             .addClass('layui-btn-disabled').prop('disabled', true);
+        $('.one-key-menu-item').addClass('layui-btn-disabled');
+        syncOneKeyMenuState();
         $('#oneKeyProgress').show();
         $('#oneKeyImportLog').html('');
         $('#oneKeyCount').text('');
@@ -1442,6 +1506,8 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         $('#oneKeyUpdateBtn').removeClass('layui-btn-disabled').prop('disabled', false);
         $('#importBtn, #importStreetBtn, #importGeoBtn, #importGeojsonBtn, #importHmtBtn, #updateDataBtn')
             .removeClass('layui-btn-disabled').prop('disabled', false);
+        $('.one-key-menu-item').removeClass('layui-btn-disabled');
+        syncOneKeyMenuState();
 
         if(errorMsg){
             $('#oneKeyText').text('一键数据更新失败');

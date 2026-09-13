@@ -38,8 +38,13 @@ class OneKeyUpdateTest extends RegionTestCase
             ->assertSee('startOneKeyUpdate', false)
             ->assertSee('runOneKeyStep1', false)
             ->assertSee('runOneKeyStep4', false)
-            // 串联调用的 6 个接口路径在前端代码中出现
-            ->assertSee('import-from-mca', false)
+            // 悬停下拉菜单（收纳五个单项导入入口）
+            ->assertSee('one-key-menu', false)
+            ->assertSee('data-btn="importBtn"', false)
+            ->assertSee('data-btn="importHmtBtn"', false)
+            // 串联调用的接口路径在前端代码中出现（阶段1 为逐省分步：list-json-provinces + import-by-province）
+            ->assertSee('list-json-provinces', false)
+            ->assertSee('import-by-province', false)
             ->assertSee('import-hmt-region', false)
             ->assertSee('street-districts', false)
             ->assertSee('import-street-by-district-from-mca', false)
