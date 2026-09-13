@@ -39,5 +39,9 @@ Route::post('/import-geo-data-by-province', [RegionController::class, 'importGeo
 Route::post('/import-geo-data', [RegionController::class, 'importGeoData']);
 Route::get('/geo-stats', [RegionController::class, 'geoStats']);
 
+// GeoJSON 在线坐标导入路由（geojson.cn）
+Route::get('/geojson-provinces', [RegionController::class, 'geojsonProvinces']);
+Route::post('/import-geo-data-from-geojson', [RegionController::class, 'importGeoDataFromGeojson']);
+
 // list.json省份列表（用于数据库为空时的首次导入）
 Route::get('/list-json-provinces', [RegionController::class, 'listJsonProvinces']);

@@ -2432,6 +2432,282 @@ class RegionService
         }
     }
 
+    // ========== GeoJSON 在线坐标导入（阿里 DataV，GCJ-02） ==========
+
+    /**
+     * 阿里 DataV GeoJSON 地址模板（{code} 为 "230000" 或 "230000_full"）
+     * 单区域文件 {code}.json 含自身 center；{code}_full.json 的 features 为下级区划
+     */
+    protected string $geojsonBaseUrl = 'https://geo.datav.aliyun.com/areas_v3/bound/{code}.json';
+
+    /**
+     * 获取支持 GeoJSON 坐标导入的省份列表（库中省级节点，过滤掉无效编码节点）
+     */
+    public function getGeojsonProvinces(): array
+    {
+        $rows = Region::where('level', Region::LEVEL_PROVINCE)
+            ->orderBy('code')
+            ->get(['code', 'name']);
+
+        $provinces = [];
+        foreach ($rows as $row) {
+            // 过滤历史导入产生的脏数据（code 非数字，无法拼出 GeoJSON 地址）
+            if (!preg_match('/^\d{6}$/', (string) $row->code)) {
+                continue;
+            }
+            $provinces[] = ['code' => $row->code, 'name' => $row->name];
+        }
+
+        return $provinces;
+    }
+
+    /**
+     * 从阿里 DataV 拉取指定省份的 GeoJSON 并按层级更新坐标（AJAX 分步导入）
+     *
+     * 层级处理：{省code}.json 单文件为省级自身坐标；{省code}_full.json 的 features
+     * 为下级区划（普通省份为市级，直辖市/港澳为区县级，level 字段区分）；
+     * 市级 feature（level=city）再拉 {市code}_full.json 获取区县级坐标。
+     *
+     * @param string $provinceCode 6 位省级行编码
+     * @return array{success: bool, message: string, updated?: int, skipped?: int, missing?: int, failed?: int, province?: string}
+     */
+    public function importGeoDataFromGeojson(string $provinceCode): array
+    {
+        if (!preg_match('/^\d{6}$/', $provinceCode)) {
+            return ['success' => false, 'message' => '省份代码格式不正确'];
+        }
+
+        $province = Region::where('code', $provinceCode)->where('level', Region::LEVEL_PROVINCE)->first();
+        if (!$province) {
+            return ['success' => false, 'message' => '库中不存在该省级节点'];
+        }
+
+        $updated = 0;
+        $skipped = 0;
+        $missing = 0;
+        $failed = 0;
+        $now = now()->format('Y-m-d H:i:s');
+
+        // 1. 拉取省级单文件，更新省级自身坐标
+        $selfJson = $this->fetchGeojson($provinceCode);
+        if (!$selfJson['success']) {
+            return ['success' => false, 'message' => "拉取省份数据失败: {$selfJson['message']}"];
+        }
+        $selfProps = $selfJson['data']['features'][0]['properties'] ?? [];
+        $updated += $this->applyGeojsonCoordinate(
+            $provinceCode,
+            $selfProps['center'] ?? $selfProps['centroid'] ?? null,
+            $now,
+            $skipped,
+            $missing,
+            $failed
+        );
+
+        // 2. 拉取省级 _full 文件，遍历下级区划（市级或直辖市区县/港澳区级）
+        $provinceJson = $this->fetchGeojson($provinceCode . '_full');
+        if (!$provinceJson['success']) {
+            Log::warning('GeoJSON 省级下级文件拉取失败', ['code' => $provinceCode, 'error' => $provinceJson['message']]);
+        } else {
+            // 本省 DataV 下级名称索引，用于编码差异兜底（库中为新编码、DataV 沿用旧编码）
+            $nameIndex = [];
+            $applyByName = function (string $code, string $featureName, ?array $center) use ($now, &$updated, &$skipped, &$missing, &$failed, &$nameIndex): void {
+                if ($this->applyGeojsonCoordinate($code, $center, $now, $skipped, $missing, $failed) === 1) {
+                    $updated++;
+                    return;
+                }
+                // 编码未命中且确有坐标时，按名称在本省范围内兜底匹配
+                if ($missing > 0) {
+                    $missing--;
+                    $this->applyGeojsonCoordinateByName(substr($code, 0, 2), $featureName, $center, $now, $skipped, $failed, $nameIndex);
+                }
+            };
+
+            foreach ($provinceJson['data']['features'] ?? [] as $feature) {
+                $props = $feature['properties'] ?? [];
+                $childCode = $props['adcode'] ?? null;
+                if (!$childCode || !preg_match('/^\d{6}$/', (string) $childCode)) {
+                    $failed++;
+                    continue;
+                }
+
+                $applyByName((string) $childCode, (string) ($props['name'] ?? ''), $props['center'] ?? $props['centroid'] ?? null);
+
+                // 市级（level=city）再拉取区县级文件；直辖市区县/港澳区级无需再拉
+                if (($props['level'] ?? null) !== 'city') {
+                    continue;
+                }
+
+                usleep(100000); // 限速，避免对数据源请求过快
+                $cityJson = $this->fetchGeojson($childCode . '_full');
+                if (!$cityJson['success']) {
+                    Log::warning('GeoJSON 市级文件拉取失败', ['code' => $childCode, 'error' => $cityJson['message']]);
+                    continue;
+                }
+
+                foreach ($cityJson['data']['features'] ?? [] as $districtFeature) {
+                    $dProps = $districtFeature['properties'] ?? [];
+                    $districtCode = $dProps['adcode'] ?? null;
+                    if (!$districtCode || !preg_match('/^\d{6}$/', (string) $districtCode)) {
+                        $failed++;
+                        continue;
+                    }
+
+                    $applyByName((string) $districtCode, (string) ($dProps['name'] ?? ''), $dProps['center'] ?? $dProps['centroid'] ?? null);
+                }
+            }
+        }
+
+        $this->clearCache();
+
+        return [
+            'success' => true,
+            'message' => "{$province->name} 坐标导入完成（GeoJSON）",
+            'updated' => $updated,
+            'skipped' => $skipped,
+            'missing' => $missing,
+            'failed' => $failed,
+            'province' => $province->name,
+        ];
+    }
+
+    /**
+     * 将 GeoJSON 单个节点的 center 坐标应用到区划记录
+     *
+     * @param string $code 6 位编码
+     * @param array|null $center [lng, lat]
+     * @param string $now 更新时间
+     * @param int $skipped 引用计数：坐标相同跳过
+     * @param int $missing 引用计数：库中无此编码
+     * @param int $failed 引用计数：数据异常
+     * @return int 实际更新条数（0 或 1）
+     */
+    protected function applyGeojsonCoordinate(string $code, ?array $center, string $now, int &$skipped, int &$missing, int &$failed): int
+    {
+        if (!is_array($center) || count($center) < 2 || !is_numeric($center[0]) || !is_numeric($center[1])) {
+            $failed++;
+            return 0;
+        }
+
+        $lon = (float) $center[0];
+        $lat = (float) $center[1];
+
+        $region = Region::where('code', $code)->first();
+        if (!$region) {
+            $missing++;
+            return 0;
+        }
+
+        if ((float) $region->lon == $lon && (float) $region->lat == $lat) {
+            $skipped++;
+            return 0;
+        }
+
+        $region->lon = $lon;
+        $region->lat = $lat;
+        $region->update_time = $now;
+        $region->save();
+
+        return 1;
+    }
+
+    /**
+     * 编码差异名称兜底：DataV 沿用旧编码而库中为新编码时（如繁昌区 340211→340212），
+     * 在同省范围内按名称匹配库中记录并应用坐标
+     *
+     * @param string $provincePrefix 省级前 2 位（限定匹配范围，防跨省同名错配）
+     * @param string $featureName DataV feature 自带名称（库中编码差异时按名称兜底）
+     * @param array|null $center [lng, lat]
+     * @param string $now 更新时间
+     * @param int $skipped 引用计数：坐标相同跳过
+     * @param int $failed 引用计数：数据异常
+     * @param array $nameIndex 本省名称索引缓存 [name => Region]
+     */
+    protected function applyGeojsonCoordinateByName(
+        string $provincePrefix,
+        string $featureName,
+        ?array $center,
+        string $now,
+        int &$skipped,
+        int &$failed,
+        array &$nameIndex
+    ): void {
+        if (!is_array($center) || count($center) < 2 || !is_numeric($center[0]) || !is_numeric($center[1])) {
+            return;
+        }
+
+        if ($featureName === '') {
+            return; // DataV 未提供名称，无从兜底
+        }
+
+        // 构建本省名称索引（惰性，一次/省）
+        if (!isset($nameIndex[$provincePrefix])) {
+            $nameIndex[$provincePrefix] = Region::where('code', 'like', $provincePrefix . '%')
+                ->whereIn('level', [Region::LEVEL_CITY, Region::LEVEL_DISTRICT])
+                ->get()
+                ->keyBy('name')
+                ->all();
+        }
+
+        $region = $nameIndex[$provincePrefix][$featureName] ?? null;
+        if (!$region) {
+            return; // 本省无同名记录（如 2023-24 新设区 DataV 未收录）
+        }
+
+        $lon = (float) $center[0];
+        $lat = (float) $center[1];
+        if ((float) $region->lon == $lon && (float) $region->lat == $lat) {
+            $skipped++;
+            return;
+        }
+
+        $region->lon = $lon;
+        $region->lat = $lat;
+        $region->update_time = $now;
+        $region->save();
+
+        Log::info('GeoJSON 名称兜底匹配成功', ['region_code' => $region->code, 'name' => $featureName]);
+    }
+
+    /**
+     * 拉取并解析阿里 DataV GeoJSON 文件
+     *
+     * @param string $code 文件名（如 "230000" 或 "230000_full"）
+     * @return array{success: bool, message?: string, data?: array}
+     */
+    protected function fetchGeojson(string $code): array
+    {
+        $url = str_replace('{code}', $code, $this->geojsonBaseUrl);
+
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
+            CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            CURLOPT_TIMEOUT => 30,
+        ]);
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($error) {
+            return ['success' => false, 'message' => 'CURL错误: ' . $error];
+        }
+        if ($httpCode !== 200) {
+            return ['success' => false, 'message' => "HTTP状态码 {$httpCode}"];
+        }
+
+        $data = json_decode((string) $response, true);
+        if (!is_array($data) || !isset($data['features'])) {
+            return ['success' => false, 'message' => 'GeoJSON 解析失败'];
+        }
+
+        return ['success' => true, 'data' => $data];
+    }
+
     /**
      * 按省份导入地理位置数据（AJAX分步导入）
      */

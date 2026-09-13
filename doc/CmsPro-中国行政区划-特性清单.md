@@ -17,14 +17,14 @@
 | 配置 | `Config/region.php`（缓存时间/前缀/默认层级） | `Config/region.php` |
 | 权限 | 2 项权限码 | `manifest.json` `permissions` |
 | 菜单 | 后台 2 个子菜单 | `manifest.json` `menus` |
-| 数据源 | 中国国家地名信息库（民政部 API） | `Services/RegionService.php` + `Data/` |
+| 数据源 | 中国国家地名信息库（民政部 API）；坐标在线更新数据源为阿里 DataV GeoJSON | `Services/RegionService.php` + `Data/` |
 
 ## 二、三终端全覆盖
 
 | 终端 | 入口 | 说明 |
 |------|------|------|
 | 后台管理 | `/admin/cmspro/region` | 数据管理页 |
-| 后台 API | `/api/admin/cmspro/region` | 区划数据查询/导入/清缓存/街道/地理位置等 |
+| 后台 API | `/api/admin/cmspro/region` | 区划数据查询/导入/清缓存/街道/地理位置/GeoJSON 坐标在线更新等 |
 
 > 本应用为基础设施类应用，主要面向其他应用提供数据服务，无前台用户端/用户端菜单。
 
@@ -98,3 +98,5 @@
 | 版本 | 日期 | 更新人 | 变更内容 |
 |------|------|--------|----------|
 | 1.0.0 | 2026-08-13 | 开发团队 | 初始版本（对应应用 v1.0.1） |
+| 1.1.0 | 2026-09-13 | 开发团队 | 新增数据演示页面（对应应用 v1.0.2） |
+| 1.2.0 | 2026-09-13 | 开发团队 | 新增在线更新坐标（GeoJSON，阿里 DataV 源）+ 编码差异名称兜底；数据演示新增 Leaflet 地图定位 |

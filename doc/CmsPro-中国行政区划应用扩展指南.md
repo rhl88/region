@@ -624,6 +624,49 @@ $stats = $regionService->getGeoStats();
 | city_with_geo | int | 市级已有地理位置数据的记录数 |
 | district_with_geo | int | 区县级已有地理位置数据的记录数 |
 
+### 4.15 getGeojsonProvinces(): array
+
+获取库中省级节点列表（过滤脏数据，仅保留 6 位数字编码），用于 GeoJSON 在线坐标更新的分步导入场景。
+
+```php
+$provinces = $regionService->getGeojsonProvinces();
+```
+
+### 4.16 importGeoDataFromGeojson(string $provinceCode): array
+
+按省份从**阿里 DataV GeoJSON 数据源**（`geo.datav.aliyun.com`，免费、免 key、GCJ-02 坐标系）在线拉取最新坐标并更新库中记录。编码未命中时自动在同省范围内按名称兜底匹配（应对 DataV 旧编码与库中新编码的差异，如繁昌区 340211→340212）。
+
+```php
+$result = $regionService->importGeoDataFromGeojson('340000');
+// [
+//     'success' => true,
+//     'message' => '安徽省 坐标导入完成（GeoJSON）',
+//     'updated' => 5,
+//     'skipped' => 120,
+//     'missing' => 0,
+//     'failed' => 0,
+//     'province' => '安徽省',
+// ]
+```
+
+**参数**：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| $provinceCode | string | 省份代码，如 `340000`（安徽省） |
+
+**返回字段**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| updated | int | 更新记录数（坐标有变化） |
+| skipped | int | 跳过记录数（坐标无变化） |
+| missing | int | 未匹配记录数（库中无对应编码且名称兜底未命中） |
+| failed | int | 异常记录数（坐标数据格式错误） |
+| province | string | 省份名称 |
+
+> 覆盖说明：2023-24 最新设市县（米林市、错那市、和康县、和安县、新星市、白杨市、草湖市）DataV 暂未收录，无法通过该方式获取坐标。
+
 ***
 
 ## 五、使用场景示例

@@ -621,6 +621,50 @@ class RegionController extends Controller
     }
 
     /**
+     * 获取支持 GeoJSON 坐标导入的省份列表
+     */
+    public function geojsonProvinces(): JsonResponse
+    {
+        $provinces = $this->regionService->getGeojsonProvinces();
+
+        return response()->json([
+            'code' => 0,
+            'message' => 'success',
+            'data' => $provinces,
+        ]);
+    }
+
+    /**
+     * 从 geojson.cn 按省导入地理坐标（AJAX分步调用）
+     */
+    public function importGeoDataFromGeojson(Request $request): JsonResponse
+    {
+        set_time_limit(600);
+
+        $provinceCode = $request->input('province_code', '');
+        if (empty($provinceCode)) {
+            return response()->json([
+                'code' => 1,
+                'message' => '请指定省份代码',
+            ]);
+        }
+
+        $result = $this->regionService->importGeoDataFromGeojson($provinceCode);
+
+        return response()->json([
+            'code' => $result['success'] ? 0 : 1,
+            'message' => $result['message'],
+            'data' => [
+                'updated' => $result['updated'] ?? 0,
+                'skipped' => $result['skipped'] ?? 0,
+                'missing' => $result['missing'] ?? 0,
+                'failed' => $result['failed'] ?? 0,
+                'province' => $result['province'] ?? '',
+            ],
+        ]);
+    }
+
+    /**
      * 获取地理位置数据统计
      */
     public function geoStats(): JsonResponse

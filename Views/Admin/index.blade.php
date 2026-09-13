@@ -50,6 +50,7 @@
                 <button class="layui-btn layui-btn-normal" id="importBtn"><i class="fa fa-download"></i> 导入三级数据</button>
                 <button class="layui-btn" id="importStreetBtn"><i class="fa fa-building"></i> 导入街道数据</button>
                 <button class="layui-btn layui-btn-success" id="importGeoBtn"><i class="fa fa-map-marker"></i> 导入地理位置</button>
+                <button class="layui-btn" id="importGeojsonBtn"><i class="fa fa-globe"></i> 在线更新坐标(GeoJSON)</button>
                 <button class="layui-btn layui-btn-warm" id="clearCacheBtn"><i class="fa fa-refresh"></i> 清除缓存</button>
                 <div class="layui-inline" style="margin-left:20px;">
                     <label class="layui-form-label" style="width:auto;padding:0 10px;">层级筛选</label>
@@ -111,6 +112,21 @@
                     <div class="layui-progress-bar" lay-percent="0%" id="geoProgressBar"></div>
                 </div>
                 <div class="import-log" id="geoImportLog"></div>
+            </div>
+
+            {{-- GeoJSON 在线坐标导入进度 --}}
+            <div class="import-progress" id="geojsonProgress" style="display:none;">
+                <div style="display:flex;align-items:center;justify-content:space-between;">
+                    <span id="geojsonProgressText">正在在线更新坐标数据...</span>
+                    <div>
+                        <span id="geojsonProgressCount">0/0</span>
+                        <button type="button" id="closeGeojsonProgressBtn" style="margin-left:10px;background:none;border:none;cursor:pointer;font-size:16px;color:#999;" title="关闭">&times;</button>
+                    </div>
+                </div>
+                <div class="layui-progress" lay-showpercent="true" lay-filter="geojsonImportProgress">
+                    <div class="layui-progress-bar" lay-percent="0%" id="geojsonProgressBar"></div>
+                </div>
+                <div class="import-log" id="geojsonImportLog"></div>
             </div>
 
             <div class="import-progress" id="downloadProgress">
@@ -1027,6 +1043,171 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         geoImportRunning = false;
         $('#importGeoBtn').removeClass('layui-btn-disabled').prop('disabled', false);
         $('#geoProgress').hide();
+    }
+
+    // GeoJSON 在线更新坐标（geojson.cn，分省AJAX导入）
+    var geojsonImportRunning = false;
+    $('#importGeojsonBtn').on('click', function(){
+        if(geojsonImportRunning){
+            layer.msg('在线坐标更新正在执行中，请等待完成', {icon: 0});
+            return;
+        }
+
+        layer.confirm(
+            '<span style="color:#e6a23c;font-weight:bold;">⚠ 在线更新坐标（GeoJSON）</span><br><br>' +
+            '将从 geojson.cn 在线拉取省/市/县三级行政中心坐标（GCJ-02）<br>' +
+            '数据编码为最新行政区划，可修复旧坐标源中已撤销区划的缺失<br>' +
+            '需联网，按省份分步更新，含港澳台数据<br><br>' +
+            '确定要继续吗？',
+            {icon: 3, title: '在线更新坐标（GeoJSON）', btn: ['确认执行', '取消']},
+            function(index){
+                layer.close(index);
+                startGeojsonImport();
+            }
+        );
+    });
+
+    function startGeojsonImport(){
+        if(geoImportRunning || level3ImportRunning || streetImportRunning || updateRunning){
+            layer.msg('其他任务正在运行中，请等待完成', {icon: 0});
+            return;
+        }
+        geojsonImportRunning = true;
+        $('#importGeojsonBtn').addClass('layui-btn-disabled').prop('disabled', true);
+        $('#geojsonProgress').show();
+        $('#geojsonImportLog').html('');
+        element.progress('geojsonImportProgress', '0%');
+
+        $.get('/api/admin/cmspro/region/geojson-provinces', function(res){
+            if(res.code !== 0 || !res.data || res.data.length === 0){
+                layer.msg('没有可更新的省份数据', {icon: 2});
+                resetGeojsonImport();
+                return;
+            }
+
+            var provinces = res.data;
+            var total = provinces.length;
+            var current = 0;
+            var totalUpdated = 0;
+            var totalMissing = 0;
+            var failedProvinces = [];
+
+            $('#geojsonProgressText').text('正在准备在线更新坐标...');
+            $('#geojsonProgressCount').text('0/' + total);
+
+            importNextGeojsonProvince();
+
+            function importNextGeojsonProvince(){
+                if(current >= total){
+                    if(failedProvinces.length > 0){
+                        appendGeojsonLog('<span style="color:orange;">⚠ ' + failedProvinces.length + ' 个省份失败，正在重试...</span>');
+                        setTimeout(retryFailedGeojsonProvinces, 500);
+                        return;
+                    }
+
+                    finishGeojsonImport();
+                    return;
+                }
+
+                var province = provinces[current];
+                current++;
+                var percent = Math.round((current / total) * 100);
+                element.progress('geojsonImportProgress', percent + '%');
+                $('#geojsonProgressCount').text(current + '/' + total);
+                $('#geojsonProgressText').text('正在更新: ' + province.name + '（含市县拉取，稍慢属正常）...');
+
+                $.post('/api/admin/cmspro/region/import-geo-data-from-geojson', {province_code: province.code}, function(res){
+                    if(res.code === 0){
+                        var data = res.data;
+                        totalUpdated += (data.updated || 0);
+                        totalMissing += (data.missing || 0);
+                        appendGeojsonLog(formatGeojsonLog(province.name, data));
+                    } else {
+                        appendGeojsonLog('<span style="color:red;">✗ ' + province.name + ': ' + (res.message || '更新失败') + '</span>');
+                        failedProvinces.push(province);
+                    }
+                    setTimeout(importNextGeojsonProvince, 50);
+                }).fail(function(){
+                    appendGeojsonLog('<span style="color:red;">✗ ' + province.name + ': 请求失败</span>');
+                    failedProvinces.push(province);
+                    setTimeout(importNextGeojsonProvince, 50);
+                });
+            }
+
+            function retryFailedGeojsonProvinces(){
+                var failedTotal = failedProvinces.length;
+                var failedCurrent = 0;
+
+                function retryNext(){
+                    if(failedCurrent >= failedTotal){
+                        var remaining = failedProvinces.length;
+                        if(remaining > 0){
+                            appendGeojsonLog('<span style="color:red;">✗ 仍有 ' + remaining + ' 个省份失败，请稍后重试</span>');
+                        }
+                        finishGeojsonImport();
+                        return;
+                    }
+
+                    var province = failedProvinces[failedCurrent];
+                    failedCurrent++;
+                    $('#geojsonProgressText').text('重试: ' + province.name + '...');
+
+                    $.post('/api/admin/cmspro/region/import-geo-data-from-geojson', {province_code: province.code}, function(res){
+                        if(res.code === 0){
+                            totalUpdated += (res.data.updated || 0);
+                            totalMissing += (res.data.missing || 0);
+                            appendGeojsonLog('<span style="color:green;">✓ ' + formatGeojsonLog(province.name, res.data) + '</span>');
+                            failedProvinces.splice(failedProvinces.indexOf(province), 1);
+                        } else {
+                            appendGeojsonLog('<span style="color:red;">✗ ' + province.name + ': 重试失败</span>');
+                        }
+                        setTimeout(retryNext, 50);
+                    }).fail(function(){
+                        appendGeojsonLog('<span style="color:red;">✗ ' + province.name + ': 重试请求失败</span>');
+                        setTimeout(retryNext, 50);
+                    });
+                }
+
+                retryNext();
+            }
+
+            function finishGeojsonImport(){
+                $('#geojsonProgressText').text('在线坐标更新完成！');
+                element.progress('geojsonImportProgress', '100%');
+                appendGeojsonLog('全部完成，共更新 ' + totalUpdated + ' 条坐标'
+                    + (totalMissing > 0 ? '，' + totalMissing + ' 条库中无对应编码（多为数据源比区划库新，属正常）' : ''));
+                refreshStats();
+                table.reload('regionTable');
+                resetGeojsonImport();
+            }
+
+            // 单省结果日志：更新/相同/未匹配/异常 分开展示，便于识别需关注的部分
+            function formatGeojsonLog(name, data){
+                var msg = name + ': ';
+                var parts = [];
+                if(data.updated > 0) parts.push('更新' + data.updated);
+                if(data.skipped > 0) parts.push('坐标相同' + data.skipped);
+                if(data.missing > 0) parts.push('<span style="color:orange;">未匹配' + data.missing + '</span>');
+                if(data.failed > 0) parts.push('<span style="color:red;">异常' + data.failed + '</span>');
+                msg += parts.length > 0 ? parts.join('，') + '条' : '无数据';
+                return msg;
+            }
+        });
+    }
+
+    function appendGeojsonLog(msg){
+        $('#geojsonImportLog').append(msg + '<br>');
+        $('#geojsonImportLog').scrollTop($('#geojsonImportLog')[0].scrollHeight);
+    }
+
+    $('#closeGeojsonProgressBtn').on('click', function(){
+        $('#geojsonProgress').slideUp(200);
+    });
+
+    function resetGeojsonImport(){
+        geojsonImportRunning = false;
+        $('#importGeojsonBtn').removeClass('layui-btn-disabled').prop('disabled', false);
+        $('#geojsonProgress').hide();
     }
 
     // 刷新统计
