@@ -28,6 +28,8 @@
         .one-key-menu-item{padding:8px 15px;font-size:13px;color:#333;cursor:pointer;white-space:nowrap;}
         .one-key-menu-item:hover{background:#f2f2f2;color:#16b777;}
         .one-key-menu-item.layui-btn-disabled{color:#ccc;cursor:not-allowed;background:#fff;}
+        /* 一键导入菜单项悬停用蓝色（匹配主按钮色），覆盖默认绿色 */
+        .one-key-import-menu .one-key-menu-item:hover{color:#1e9fff;}
     </style>
 </head>
 <body>
@@ -58,8 +60,16 @@
     <div class="layui-card" style="margin-top:15px;">
         <div class="layui-card-body">
             <div style="margin-bottom:15px;">
-                {{-- 主按钮：单击执行一键导入/一键更新（同一套四阶段串联链路）；悬停弹出下拉菜单显示各阶段独立导入入口 --}}
-                <button class="layui-btn" id="oneKeyImportBtn" style="background:#1e9fff;"><i class="fa fa-cloud-download"></i> 一键导入</button>
+                {{-- 主按钮：单击执行一键导入（本地链路）/一键数据更新（在线链路）；悬停弹出下拉菜单显示各阶段独立导入入口 --}}
+                <div class="one-key-wrap">
+                    <button class="layui-btn" id="oneKeyImportBtn" style="background:#1e9fff;"><i class="fa fa-database"></i> 一键导入</button>
+                    <div class="one-key-menu one-key-import-menu">
+                        <div class="one-key-menu-title">本地数据导入（手动执行单项）</div>
+                        <div class="one-key-menu-item" data-btn="importBtn"><i class="fa fa-download"></i> 导入三级数据</div>
+                        <div class="one-key-menu-item" data-btn="importStreetBtn"><i class="fa fa-building"></i> 导入街道数据</div>
+                        <div class="one-key-menu-item" data-btn="importGeoBtn"><i class="fa fa-map-marker"></i> 导入地理位置</div>
+                    </div>
+                </div>
                 <div class="one-key-wrap">
                     <button class="layui-btn" id="oneKeyUpdateBtn" style="background:#16b777;"><i class="fa fa-bolt"></i> 一键数据更新</button>
                     <div class="one-key-menu">
@@ -1378,7 +1388,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     }
 
     // 一键数据更新（四阶段串联：三级区划 → 港澳台补全 → 街道数据 → 最新坐标）
-    // 下拉菜单项点击 → 调用对应功能的入口函数（与原按钮逻辑完全一致）
+    // 两个主按钮的下拉菜单项共用此映射：点击 → 调用对应功能的入口函数（与原按钮逻辑完全一致）
     var oneKeyMenuTriggers = {
         'importBtn': triggerLevel3Import,
         'importStreetBtn': triggerStreetImport,
@@ -1410,6 +1420,8 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     }
 
     var oneKeyRunning = false;
+    var oneKeyMode = 'online';          // 链路模式：local=本地导入(3阶段) / online=在线更新(4阶段)
+    var oneKeyTitle = '一键数据更新';    // 当前链路标题（用于完成态文案）
     var oneKeyFailedDistricts = [];   // 街道阶段失败区县（重试用）
     var oneKeyFailedGeoProvinces = []; // 坐标阶段失败省份（重试用）
     var oneKeyCurrentIndex = 0;       // 街道阶段当前区县索引
@@ -1421,8 +1433,9 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     var oneKeyL3Inserted = 0;          // 三级阶段累计新增
     var oneKeyL3Updated = 0;           // 三级阶段累计更新
 
-    // 一键导入 / 一键数据更新：共用同一套四阶段串联链路（三级区划 → 港澳台补全 → 街道数据 → 最新坐标），
-    // 仅入口确认框与进度文案的标题不同
+    // 一键导入 / 一键数据更新：两条独立链路
+    // 一键导入（本地）：三级区划(list.json) → 街道数据(本地缓存优先) → 地理位置(xlsx)，全程不依赖在线 API
+    // 一键数据更新（在线）：三级区划(民政部) → 港澳台补全(DataV) → 街道数据(API缓存优先) → 最新坐标(GeoJSON)
     function triggerOneKeyRun(source){
         if(oneKeyRunning){
             layer.msg('任务正在执行中，请等待完成', {icon: 0});
@@ -1433,28 +1446,38 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
             return;
         }
 
-        var isImport = (source === 'import');
-        var title = isImport ? '一键导入' : '一键数据更新';
-        var btnText = isImport ? '开始导入' : '开始更新';
-        var tipText = isImport
-            ? '首次导入全量数据，街道阶段为大头，耗时最长'
-            : '增量更新已有数据，全程预计耗时较长（街道阶段为大头）';
-
-        layer.confirm(
-            '<span style="color:#e6a23c;font-weight:bold;">⚠ ' + title + '（全在线源）</span><br><br>' +
-            '将按顺序自动执行四个阶段（需联网）：<br>' +
-            '① 三级区划：从民政部 API 逐省更新省/市/区县<br>' +
-            '② 港澳台补全：从阿里 DataV 修正台湾编码、补全港澳区级<br>' +
-            '③ 街道数据：逐区县拉取（约4万+条，耗时最长）<br>' +
-            '④ 最新坐标：从阿里 DataV 逐省更新坐标<br><br>' +
-            '<span style="color:#e6a23c;">' + tipText + '，执行期间请不要关闭或刷新页面。</span><br><br>' +
-            '确定要开始吗？',
-            {icon: 3, title: title, btn: [btnText, '取消']},
-            function(index){
-                layer.close(index);
-                startOneKeyUpdate(title);
-            }
-        );
+        if(source === 'import'){
+            layer.confirm(
+                '<span style="color:#e6a23c;font-weight:bold;">⚠ 一键导入（本地数据）</span><br><br>' +
+                '将使用应用内置的本地数据包按顺序自动执行三个阶段（无需联网）：<br>' +
+                '① 三级区划：从本地 list.json 逐省导入省/市/区县<br>' +
+                '② 街道数据：逐区县导入（优先读取本地缓存，约4万+条，耗时最长）<br>' +
+                '③ 地理位置：从本地 Excel 为城市/区县写入经纬度<br><br>' +
+                '<span style="color:#e6a23c;">首次导入全量数据，街道阶段为大头，执行期间请不要关闭或刷新页面。</span><br><br>' +
+                '确定要开始吗？',
+                {icon: 3, title: '一键导入', btn: ['开始导入', '取消']},
+                function(index){
+                    layer.close(index);
+                    startOneKeyUpdate('一键导入', 'local');
+                }
+            );
+        } else {
+            layer.confirm(
+                '<span style="color:#e6a23c;font-weight:bold;">⚠ 一键数据更新（全在线源）</span><br><br>' +
+                '将按顺序自动执行四个阶段（需联网）：<br>' +
+                '① 三级区划：从民政部 API 逐省更新省/市/区县<br>' +
+                '② 港澳台补全：从阿里 DataV 修正台湾编码、补全港澳区级<br>' +
+                '③ 街道数据：逐区县拉取（约4万+条，耗时最长）<br>' +
+                '④ 最新坐标：从阿里 DataV 逐省更新坐标<br><br>' +
+                '<span style="color:#e6a23c;">增量更新已有数据，全程预计耗时较长（街道阶段为大头），执行期间请不要关闭或刷新页面。</span><br><br>' +
+                '确定要开始吗？',
+                {icon: 3, title: '一键数据更新', btn: ['开始更新', '取消']},
+                function(index){
+                    layer.close(index);
+                    startOneKeyUpdate('一键数据更新', 'online');
+                }
+            );
+        }
     }
 
     $('#oneKeyUpdateBtn').on('click', function(){
@@ -1465,8 +1488,11 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         triggerOneKeyRun('import');
     });
 
-    function startOneKeyUpdate(title){
+    function startOneKeyUpdate(title, mode){
         title = title || '一键数据更新';
+        mode = mode || 'online';
+        oneKeyMode = mode;
+        oneKeyTitle = title;
         oneKeyRunning = true;
         oneKeyFailedDistricts = [];
         oneKeyFailedGeoProvinces = [];
@@ -1491,7 +1517,8 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         element.progress('oneKeyImportProgress', '0%');
         resetOneKeySteps();
 
-        appendOneKeyLog('【开始】' + title + '，共 4 个阶段');
+        var stageCount = (mode === 'local') ? 3 : 4;
+        appendOneKeyLog('【开始】' + title + '（' + (mode === 'local' ? '本地数据' : '在线数据') + '），共 ' + stageCount + ' 个阶段');
         setTimeout(runOneKeyStep1, 100);
     }
 
@@ -1499,6 +1526,8 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         for(var i = 1; i <= 4; i++){
             $('#oneKeyStep' + i).removeClass('active done');
         }
+        // 本地模式无港澳台阶段，隐藏第4步（最新坐标）标签
+        $('#oneKeyStep4').toggle(oneKeyMode !== 'local');
     }
 
     function setOneKeyStep(step){
@@ -1529,10 +1558,10 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         syncOneKeyMenuState();
 
         if(errorMsg){
-            $('#oneKeyText').text(title + '失败');
+            $('#oneKeyText').text(oneKeyTitle + '失败');
             appendOneKeyLog('<span style="color:red;">✗ ' + errorMsg + '</span>');
         } else {
-            $('#oneKeyText').text(title + '完成！');
+            $('#oneKeyText').text(oneKeyTitle + '完成！');
             setOneKeyProgress(100);
             appendOneKeyLog('【结束】全部阶段执行完毕');
         }
@@ -1544,23 +1573,26 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         oneKeyRunning = false;
     }
 
-    // 阶段1：民政部 API 按省分步更新三级区划（与「导入三级数据」按钮同模式，避免单请求超时）
+    // 阶段1：三级区划按省分步导入（与「导入三级数据」按钮同模式，避免单请求超时）
+    // local 模式：list-json-provinces / import-by-province 均从本地 Data/list.json 读取
+    // online 模式：同一组接口，但数据源为民政部 API 同步下来的本地缓存（download 接口维护）
     function runOneKeyStep1(){
         setOneKeyStep(1);
-        $('#oneKeyText').text('【阶段1/4】正在获取省份列表...');
+        var isLocal = (oneKeyMode === 'local');
+        $('#oneKeyText').text('【阶段1/' + (isLocal ? '3' : '4') + '】正在获取省份列表...');
         $('#oneKeyCount').text('');
-        appendOneKeyLog('【阶段1】三级区划（民政部 API，按省分步）...');
+        appendOneKeyLog('【阶段1】三级区划（' + (isLocal ? '本地 list.json' : '民政部 API') + '，按省分步）...');
 
         $.get('/api/admin/cmspro/region/list-json-provinces', function(res){
             if(res.code !== 0 || !res.data || res.data.length === 0){
-                finishOneKeyUpdate('获取省份列表失败，无法更新三级区划');
+                finishOneKeyUpdate('获取省份列表失败，无法导入三级区划');
                 return;
             }
             oneKeyL3Provinces = res.data;
-            appendOneKeyLog('共 ' + oneKeyL3Provinces.length + ' 个省份，开始更新...');
+            appendOneKeyLog('共 ' + oneKeyL3Provinces.length + ' 个省份，开始导入...');
             importNextL3Province();
         }).fail(function(){
-            finishOneKeyUpdate('获取省份列表失败，请检查网络');
+            finishOneKeyUpdate('获取省份列表失败，请检查数据文件' + (isLocal ? '' : '与网络'));
         });
     }
 
@@ -1579,7 +1611,8 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         oneKeyL3Index++;
         setOneKeyProgress(Math.round((oneKeyL3Index / total) * 5));
         $('#oneKeyCount').text(oneKeyL3Index + '/' + total);
-        $('#oneKeyText').text('【阶段1/4】正在更新三级区划: ' + province.name + '...');
+        var isLocal = (oneKeyMode === 'local');
+        $('#oneKeyText').text('【阶段1/' + (isLocal ? '3' : '4') + '】正在导入三级区划: ' + province.name + '...');
 
         $.post('/api/admin/cmspro/region/import-by-province', {province_code: province.code}, function(res){
             if(res.code === 0){
@@ -1587,7 +1620,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                 oneKeyL3Inserted += (data.inserted || 0);
                 oneKeyL3Updated += (data.updated || 0);
             } else {
-                appendOneKeyLog('<span style="color:red;">✗ ' + province.name + ': ' + (res.message || '更新失败') + '</span>');
+                appendOneKeyLog('<span style="color:red;">✗ ' + province.name + ': ' + (res.message || '导入失败') + '</span>');
             }
             setTimeout(importNextL3Province, 50);
         }).fail(function(){
@@ -1596,8 +1629,13 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         });
     }
 
-    // 阶段2：港澳台补全（单请求，DataV 源）
+    // 阶段2：local 模式跳过（无港澳台阶段，直入街道）；online 模式为港澳台补全（单请求，DataV 源）
     function runOneKeyStep2(){
+        if(oneKeyMode === 'local'){
+            // 本地模式：无港澳台阶段，进入街道阶段（进度 30% 与在线模式衔接）
+            setTimeout(runOneKeyStep3, 100);
+            return;
+        }
         setOneKeyStep(2);
         $('#oneKeyText').text('【阶段2/4】正在补全港澳台区划（阿里 DataV）...');
         appendOneKeyLog('【阶段2】港澳台补全（阿里 DataV）...');
@@ -1625,12 +1663,14 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         });
     }
 
-    // 阶段3：街道数据（逐区县串行，收集区县后导入）
+    // 阶段3：街道数据（逐区县串行，收集区县后导入；两种模式接口一致，仅数据源文案不同）
     function runOneKeyStep3(){
         setOneKeyStep(3);
-        $('#oneKeyText').text('【阶段3/4】正在收集街道数据区县列表...');
+        var isLocal = (oneKeyMode === 'local');
+        var totalStages = isLocal ? 3 : 4;
+        $('#oneKeyText').text('【阶段3/' + totalStages + '】正在收集街道数据区县列表...');
         $('#oneKeyCount').text('');
-        appendOneKeyLog('【阶段3】街道数据（民政部 API，缓存优先）...');
+        appendOneKeyLog('【阶段3】街道数据（' + (isLocal ? '本地缓存优先，无缓存则调 API' : '民政部 API，缓存优先') + '）...');
 
         $.get('/api/admin/cmspro/region/provinces', function(res){
             if(res.code !== 0 || !res.data || res.data.length === 0){
@@ -1711,7 +1751,8 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                 // 街道阶段占整体进度的 30%~85%
                 setOneKeyProgress(30 + Math.round(percent * 0.55));
                 $('#oneKeyCount').text(oneKeyCurrentIndex + '/' + total);
-                $('#oneKeyText').text('【阶段3/4】正在导入街道: ' + district.provinceName + ' - ' + district.name + '...');
+                var totalStages = isLocal ? 3 : 4;
+                $('#oneKeyText').text('【阶段3/' + totalStages + '】正在导入街道: ' + district.provinceName + ' - ' + district.name + '...');
 
                 $.post('/api/admin/cmspro/region/import-street-by-district-from-mca', {district_code: district.code}, function(res){
                     if(res.code === 0){
@@ -1743,8 +1784,36 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         });
     }
 
-    // 阶段4：最新坐标（GeoJSON 逐省）
+    // 阶段4：最新坐标
+    // local 模式：从本地 Excel（地理位置编码.xlsx）全量导入坐标（单请求）
+    // online 模式：从阿里 DataV GeoJSON 逐省更新
     function runOneKeyStep4(){
+        if(oneKeyMode === 'local'){
+            setOneKeyStep(4);
+            $('#oneKeyText').text('【阶段3/3】正在导入地理位置（本地 Excel）...');
+            $('#oneKeyCount').text('');
+            appendOneKeyLog('【阶段3】地理位置（本地 Excel，城市/区县坐标）...');
+            setOneKeyProgress(86);
+
+            $.post('/api/admin/cmspro/region/import-geo-data', function(res){
+                if(res.code === 0){
+                    var data = res.data || {};
+                    var parts = [];
+                    if(data.updated > 0) parts.push('更新' + data.updated);
+                    if(data.skipped > 0) parts.push('坐标相同' + data.skipped);
+                    if(data.failed > 0) parts.push('<span style="color:red;">异常' + data.failed + '</span>');
+                    appendOneKeyLog('<span style="color:green;">✓ 地理位置完成' + (parts.length > 0 ? '：' + parts.join('，') + ' 条' : '') + '</span>');
+                } else {
+                    appendOneKeyLog('<span style="color:orange;">⚠ 地理位置导入失败（' + (res.message || '未知错误') + '），不中止流程</span>');
+                }
+                finishOneKeyUpdate();
+            }).fail(function(){
+                appendOneKeyLog('<span style="color:orange;">⚠ 地理位置导入请求失败，不中止流程</span>');
+                finishOneKeyUpdate();
+            });
+            return;
+        }
+
         setOneKeyStep(4);
         $('#oneKeyText').text('【阶段4/4】正在获取可更新省份...');
         $('#oneKeyCount').text('');

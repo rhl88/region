@@ -5,12 +5,13 @@ namespace App\Apps\CmsproRegion\Tests\Feature;
 /**
  * 一键数据更新功能测试
  *
- * 覆盖「一键数据更新」串联功能的页面渲染与后端接口契约：
- * 1. 管理页渲染一键更新按钮、四步骤标签、统一进度面板
- * 2. 串联流程依赖的全部 6 个后端接口路由存在且响应结构正确
- * 3. 未登录访问被 auth:admin 中间件拦截
+ * 覆盖「一键数据更新 / 一键导入」串联功能的页面渲染与后端接口契约：
+ * 1. 管理页渲染两个主按钮（均带悬停下拉菜单）、四步骤标签、统一进度面板
+ * 2. 一键导入（本地数据链路）与一键数据更新（在线链路）的入口分流
+ * 3. 串联流程依赖的全部后端接口路由存在且响应结构正确
+ * 4. 未登录访问被 auth:admin 中间件拦截
  *
- * 说明：四阶段调度由前端 JS 复用现有接口串行完成（方案 A，零后端改动），
+ * 说明：串联调度由前端 JS 复用现有接口串行完成（零后端改动），
  * 后端无新增接口，故本测试聚焦「接口契约不被破坏」的回归验证。
  */
 class OneKeyUpdateTest extends RegionTestCase
@@ -38,12 +39,17 @@ class OneKeyUpdateTest extends RegionTestCase
             ->assertSee('startOneKeyUpdate', false)
             ->assertSee('runOneKeyStep1', false)
             ->assertSee('runOneKeyStep4', false)
-            // 一键导入按钮（与一键数据更新共用同一套串联链路）
+            // 一键导入按钮（本地数据链路：三级区划 → 街道 → 地理位置，与在线更新链路分流）
             ->assertSee('oneKeyImportBtn', false)
             ->assertSee('一键导入', false)
             ->assertSee('triggerOneKeyRun', false)
-            // 悬停下拉菜单（收纳五个单项导入入口）
+            ->assertSee("startOneKeyUpdate('一键导入', 'local')", false)
+            ->assertSee("startOneKeyUpdate('一键数据更新', 'online')", false)
+            // 本地模式第三阶段使用 Excel 全量导入接口
+            ->assertSee('import-geo-data', false)
+            // 悬停下拉菜单（两个主按钮各自收纳单项入口；更新菜单5项含港澳台/坐标，导入菜单3项为本地链路阶段）
             ->assertSee('one-key-menu', false)
+            ->assertSee('one-key-import-menu', false)
             ->assertSee('data-btn="importBtn"', false)
             ->assertSee('data-btn="importHmtBtn"', false)
             // 串联调用的接口路径在前端代码中出现（阶段1 为逐省分步：list-json-provinces + import-by-province）
