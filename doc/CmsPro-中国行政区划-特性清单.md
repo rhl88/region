@@ -16,7 +16,7 @@
 | 安装卸载 | 迁移 + 后台手动导入（避免超时） | `Install.php` |
 | 配置 | `Config/region.php`（缓存时间/前缀/默认层级） | `Config/region.php` |
 | 权限 | 2 项权限码 | `manifest.json` `permissions` |
-| 菜单 | 后台 1 个子菜单 | `manifest.json` `menus` |
+| 菜单 | 后台 2 个子菜单 | `manifest.json` `menus` |
 | 数据源 | 中国国家地名信息库（民政部 API） | `Services/RegionService.php` + `Data/` |
 
 ## 二、三终端全覆盖
@@ -76,13 +76,13 @@
 | 卸载 | 回滚迁移 | `Install::uninstall()` |
 | 升级 | 执行迁移 | `Install::upgrade()` |
 
-> 安装后数据表为空，需进入后台「行政区划 → 数据管理」手动导入数据。另有 `database/migrations/2026_06_25_add_geo_columns.php` 添加经纬度列。
+> 安装后数据表为空，需进入后台「行政区划 → 数据管理」手动导入数据。另有 `Migrations/2026_06_25_add_geo_columns.php` 添加经纬度列。
 
 ## 九、视图规范
 
 | 视图目录 | 说明 |
 |----------|------|
-| `Views/Admin/` | 后台数据管理页（`index.blade.php`） |
+| `Views/Admin/` | 后台数据管理页（`index.blade.php`）、数据演示页（`demo.blade.php`） |
 
 遵循 CmsPro 应用视图规范（Layui 后台模板）。
 
@@ -91,6 +91,7 @@
 | 菜单 | 路径 | 类型 |
 |------|------|------|
 | 数据管理 | `/admin/cmspro/region` | 后台 |
+| 数据演示 | `/admin/cmspro/region/demo` | 后台 |
 
 ## 十一、版本历史
 

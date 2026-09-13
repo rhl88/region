@@ -28,6 +28,13 @@
                     "path": "/admin/cmspro/region",
                     "code": "admin_cmspro_region",
                     "order": 1
+                },
+                {
+                    "title": "数据演示",
+                    "icon": "fa fa-eye",
+                    "path": "/admin/cmspro/region/demo",
+                    "code": "admin_cmspro_region_demo",
+                    "order": 2
                 }
             ]
         }

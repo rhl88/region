@@ -28,6 +28,21 @@ class RegionController extends Controller
     }
 
     /**
+     * 数据演示页面
+     */
+    public function demo()
+    {
+        $stats = $this->regionService->getStats();
+        $geoStats = $this->regionService->getGeoStats();
+
+        $hasLevel3 = ($stats['province'] > 0 && $stats['city'] > 0 && $stats['district'] > 0);
+        $hasStreet = ($stats['street'] > 0);
+        $hasGeo = ($geoStats['with_geo'] > 0);
+
+        return view('cmsproregion::Admin.demo', compact('stats', 'geoStats', 'hasLevel3', 'hasStreet', 'hasGeo'));
+    }
+
+    /**
      * 获取省份列表
      */
     public function provinces(): JsonResponse

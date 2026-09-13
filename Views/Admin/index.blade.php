@@ -14,8 +14,6 @@
         .stat-card:last-child{margin-right:0;}
         .stat-card .stat-num{font-size:32px;font-weight:bold;color:#2563eb;}
         .stat-card .stat-label{font-size:14px;color:#666;margin-top:8px;}
-        .cascader-preview{padding:15px;background:#f8fafc;border-radius:6px;margin-top:15px;}
-        .cascader-preview select{width:150px;height:36px;padding:0 10px;border:1px solid #e2e8f0;border-radius:4px;margin-right:10px;font-size:14px;}
         .import-progress{margin-top:10px;padding:15px;background:#fffbe6;border:1px solid #ffe58f;border-radius:4px;display:none;}
         .import-progress .layui-progress{margin-top:8px;}
         .import-log{max-height:200px;overflow-y:auto;margin-top:8px;padding:8px;background:#fafafa;border-radius:4px;font-size:12px;line-height:1.8;color:#666;}
@@ -41,22 +39,6 @@
             <div class="stat-card">
                 <div class="stat-num" id="statStreet">{{ $stats['street'] ?? 0 }}</div>
                 <div class="stat-label">街道/乡镇</div>
-            </div>
-        </div>
-    </div>
-
-    {{-- 级联选择器预览 --}}
-    <div class="layui-card" style="margin-top:15px;">
-        <div class="layui-card-header">区划选择器预览</div>
-        <div class="layui-card-body">
-            <div class="cascader-preview">
-                <select id="provinceSelect"><option value="">请选择省份</option></select>
-                <select id="citySelect"><option value="">请选择城市</option></select>
-                <select id="districtSelect"><option value="">请选择区县</option></select>
-                @if($stats['street'] > 0)
-                <select id="streetSelect"><option value="">请选择街道/乡镇</option></select>
-                @endif
-                <span id="selectedPath" style="margin-left:10px;color:#666;"></span>
             </div>
         </div>
     </div>
@@ -165,7 +147,6 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     });
 
     var levelNames = {1:'省/直辖市', 2:'市', 3:'区/县', 4:'街道/乡镇'};
-    var hasStreetData = {{ $stats['street'] > 0 ? 'true' : 'false' }};
 
     // 渲染数据表格
     table.render({
@@ -279,7 +260,6 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                 resetLevel3Import();
                 refreshStats();
                 table.reload('regionTable');
-                loadProvinces();
                 return;
             }
 
@@ -416,7 +396,6 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                         appendLog('全部完成，共导入 ' + totalImported + ' 条街道数据');
                         refreshStats();
                         table.reload('regionTable');
-                        loadProvinces();
                         resetStreetImport();
                         return;
                     }
@@ -487,7 +466,6 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                             }
                             refreshStats();
                             table.reload('regionTable');
-                            loadProvinces();
                             resetStreetImport();
                             return;
                         }
@@ -853,7 +831,6 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     function showReport(){
         refreshStats();
         table.reload('regionTable');
-        loadProvinces();
 
         var r = report;
         var reportHtml = '<div style="margin-top:8px;padding:10px;background:#f0f9eb;border:1px solid #e1f3d8;border-radius:4px;font-size:13px;line-height:2;">';
@@ -1063,111 +1040,6 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
             }
         });
     }
-
-    // 级联选择器
-    function loadProvinces(){
-        $.get('/api/admin/cmspro/region/provinces', function(res){
-            if(res.code !== 0) return;
-            var html = '<option value="">请选择省份</option>';
-            res.data.forEach(function(item){
-                html += '<option value="'+item.code+'">'+item.name+'</option>';
-            });
-            $('#provinceSelect').html(html);
-            $('#citySelect').html('<option value="">请选择城市</option>');
-            $('#districtSelect').html('<option value="">请选择区县</option>');
-            if(hasStreetData) $('#streetSelect').html('<option value="">请选择街道/乡镇</option>');
-            $('#selectedPath').text('');
-        });
-    }
-
-    $('#provinceSelect').on('change', function(){
-        var code = $(this).val();
-        if(!code){
-            $('#citySelect').html('<option value="">请选择城市</option>');
-            $('#districtSelect').html('<option value="">请选择区县</option>');
-            if(hasStreetData) $('#streetSelect').html('<option value="">请选择街道/乡镇</option>');
-            $('#selectedPath').text('');
-            return;
-        }
-        var provinceName = $('#provinceSelect option:selected').text();
-        $('#selectedPath').text(provinceName);
-        $.get('/api/admin/cmspro/region/children?code='+code, function(res){
-            if(res.code !== 0) return;
-            var html = '<option value="">请选择城市</option>';
-            res.data.forEach(function(item){
-                html += '<option value="'+item.code+'">'+item.name+'</option>';
-            });
-            $('#citySelect').html(html);
-            $('#districtSelect').html('<option value="">请选择区县</option>');
-            if(hasStreetData) $('#streetSelect').html('<option value="">请选择街道/乡镇</option>');
-        });
-    });
-
-    $('#citySelect').on('change', function(){
-        var code = $(this).val();
-        if(!code){
-            $('#districtSelect').html('<option value="">请选择区县</option>');
-            if(hasStreetData) $('#streetSelect').html('<option value="">请选择街道/乡镇</option>');
-            return;
-        }
-        var provinceName = $('#provinceSelect option:selected').text();
-        var cityName = $('#citySelect option:selected').text();
-        $('#selectedPath').text(provinceName + ' > ' + cityName);
-        $.get('/api/admin/cmspro/region/children?code='+code, function(res){
-            if(res.code !== 0) return;
-            var html = '<option value="">请选择区县</option>';
-            res.data.forEach(function(item){
-                html += '<option value="'+item.code+'">'+item.name+'</option>';
-            });
-            $('#districtSelect').html(html);
-            if(hasStreetData) $('#streetSelect').html('<option value="">请选择街道/乡镇</option>');
-        });
-    });
-
-    $('#districtSelect').on('change', function(){
-        var code = $(this).val();
-        var provinceName = $('#provinceSelect option:selected').text();
-        var cityName = $('#citySelect option:selected').text();
-        var districtName = $('#districtSelect option:selected').text();
-
-        if(!code){
-            if(hasStreetData) $('#streetSelect').html('<option value="">请选择街道/乡镇</option>');
-            $('#selectedPath').text(provinceName + ' > ' + cityName);
-            return;
-        }
-
-        $('#selectedPath').text(provinceName + ' > ' + cityName + ' > ' + districtName);
-
-        // 有街道数据时，加载街道数据
-        if(hasStreetData){
-            $.get('/api/admin/cmspro/region/children?code='+code, function(res){
-                if(res.code !== 0) return;
-                var html = '<option value="">请选择街道/乡镇</option>';
-                res.data.forEach(function(item){
-                    html += '<option value="'+item.code+'">'+item.name+'</option>';
-                });
-                $('#streetSelect').html(html);
-            });
-        }
-    });
-
-    // 街道选择变化
-    if(hasStreetData){
-        $('#streetSelect').on('change', function(){
-            var provinceName = $('#provinceSelect option:selected').text();
-            var cityName = $('#citySelect option:selected').text();
-            var districtName = $('#districtSelect option:selected').text();
-            var streetName = $('#streetSelect option:selected').text();
-            var path = provinceName + ' > ' + cityName + ' > ' + districtName;
-            if(streetName && $(this).val()){
-                path += ' > ' + streetName;
-            }
-            $('#selectedPath').text(path);
-        });
-    }
-
-    // 初始化加载省份
-    loadProvinces();
 
     // 检测是否已有数据，无数据时提示导入
     $.get('/api/admin/cmspro/region/stats', function(res){
