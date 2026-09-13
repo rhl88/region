@@ -51,6 +51,7 @@
                 <button class="layui-btn" id="importStreetBtn"><i class="fa fa-building"></i> 导入街道数据</button>
                 <button class="layui-btn layui-btn-success" id="importGeoBtn"><i class="fa fa-map-marker"></i> 导入地理位置</button>
                 <button class="layui-btn" id="importGeojsonBtn"><i class="fa fa-globe"></i> 更新坐标</button>
+                <button class="layui-btn layui-btn-danger" id="importHmtBtn"><i class="fa fa-flag"></i> 补全港澳台</button>
                 <button class="layui-btn layui-btn-warm" id="clearCacheBtn"><i class="fa fa-refresh"></i> 清除缓存</button>
                 <div class="layui-inline" style="margin-left:20px;">
                     <label class="layui-form-label" style="width:auto;">层级</label>
@@ -127,6 +128,21 @@
                     <div class="layui-progress-bar" lay-percent="0%" id="geojsonProgressBar"></div>
                 </div>
                 <div class="import-log" id="geojsonImportLog"></div>
+            </div>
+
+            {{-- 港澳台区划补全进度 --}}
+            <div class="import-progress" id="hmtProgress" style="display:none;">
+                <div style="display:flex;align-items:center;justify-content:space-between;">
+                    <span id="hmtProgressText">正在补全港澳台区划数据...</span>
+                    <div>
+                        <span id="hmtProgressCount">0/3</span>
+                        <button type="button" id="closeHmtProgressBtn" style="margin-left:10px;background:none;border:none;cursor:pointer;font-size:16px;color:#999;" title="关闭">&times;</button>
+                    </div>
+                </div>
+                <div class="layui-progress" lay-showpercent="true" lay-filter="hmtImportProgress">
+                    <div class="layui-progress-bar" lay-percent="0%" id="hmtProgressBar"></div>
+                </div>
+                <div class="import-log" id="hmtImportLog"></div>
             </div>
 
             <div class="import-progress" id="downloadProgress">
@@ -1211,6 +1227,97 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         geojsonImportRunning = false;
         $('#importGeojsonBtn').removeClass('layui-btn-disabled').prop('disabled', false);
         $('#geojsonProgress').hide();
+    }
+
+    // 港澳台区划补全（阿里 DataV 源：修台湾脏编码 + 补香港18区/澳门8区）
+    var hmtImportRunning = false;
+    $('#importHmtBtn').on('click', function(){
+        if(hmtImportRunning){
+            layer.msg('港澳台补全正在执行中，请等待完成', {icon: 0});
+            return;
+        }
+
+        layer.confirm(
+            '<span style="color:#e6a23c;font-weight:bold;">⚠ 补全港澳台区划数据</span><br><br>' +
+            '将从阿里 DataV 在线拉取数据（需联网）：<br>' +
+            '· 修正台湾省级脏编码（code=资料 → 710000）并更新坐标<br>' +
+            '· 补全香港 18 个区级节点（含坐标）<br>' +
+            '· 补全澳门 8 个区级节点（含坐标）<br>' +
+            '· 台湾无下级公开数据，仅更新省级坐标<br>' +
+            '完成后自动重建闭包表并清除缓存<br><br>' +
+            '确定要继续吗？',
+            {icon: 3, title: '补全港澳台区划', btn: ['确认执行', '取消']},
+            function(index){
+                layer.close(index);
+                startHmtImport();
+            }
+        );
+    });
+
+    function startHmtImport(){
+        if(geoImportRunning || level3ImportRunning || streetImportRunning || updateRunning || geojsonImportRunning){
+            layer.msg('其他任务正在运行中，请等待完成', {icon: 0});
+            return;
+        }
+        hmtImportRunning = true;
+        $('#importHmtBtn').addClass('layui-btn-disabled').prop('disabled', true);
+        $('#hmtProgress').show();
+        $('#hmtImportLog').html('');
+        $('#hmtProgressText').text('正在拉取港澳台数据（阿里 DataV）...');
+        $('#hmtProgressCount').text('0/3');
+        element.progress('hmtImportProgress', '0%');
+
+        $.post('/api/admin/cmspro/region/import-hmt-region', function(res){
+            if(res.code === 0){
+                var data = res.data;
+                element.progress('hmtImportProgress', '100%');
+                $('#hmtProgressCount').text('3/3');
+
+                if(data.fixed_taiwan > 0){
+                    appendHmtLog('<span style="color:green;">✓ 台湾省级脏编码已修正为 710000（' + data.fixed_taiwan + ' 条）</span>');
+                }
+                $.each(data.details || [], function(i, item){
+                    var parts = [];
+                    if(item.self_coord) parts.push('省级坐标已更新');
+                    if(item.inserted > 0) parts.push('新增 ' + item.inserted + ' 个区级');
+                    if(item.updated > 0) parts.push('更新 ' + item.updated + ' 个区级');
+                    if(parts.length === 0) parts.push('无下级数据（仅省级）');
+                    var color = item.inserted > 0 ? 'green' : '';
+                    appendHmtLog('<span style="color:' + color + ';">✓ ' + item.name + ': ' + parts.join('，') + '</span>');
+                });
+                if(data.failed > 0){
+                    appendHmtLog('<span style="color:orange;">⚠ ' + data.failed + ' 条数据异常未处理</span>');
+                }
+
+                $('#hmtProgressText').text('港澳台数据补全完成！');
+                layer.msg(res.message, {icon: 1, time: 3000});
+                refreshStats();
+                table.reload('regionTable');
+            } else {
+                appendHmtLog('<span style="color:red;">✗ ' + (res.message || '补全失败') + '</span>');
+                layer.msg(res.message || '补全失败', {icon: 2});
+            }
+            resetHmtImport();
+        }).fail(function(){
+            appendHmtLog('<span style="color:red;">✗ 请求失败，请检查网络</span>');
+            layer.msg('请求失败，请检查网络', {icon: 2});
+            resetHmtImport();
+        });
+    }
+
+    function appendHmtLog(msg){
+        $('#hmtImportLog').append(msg + '<br>');
+        $('#hmtImportLog').scrollTop($('#hmtImportLog')[0].scrollHeight);
+    }
+
+    $('#closeHmtProgressBtn').on('click', function(){
+        $('#hmtProgress').slideUp(200);
+    });
+
+    function resetHmtImport(){
+        hmtImportRunning = false;
+        $('#importHmtBtn').removeClass('layui-btn-disabled').prop('disabled', false);
+        $('#hmtProgress').hide();
     }
 
     // 刷新统计

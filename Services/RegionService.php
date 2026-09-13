@@ -1500,9 +1500,16 @@ class RegionService
     /**
      * 将API代码标准化为6位行政区划代码
      * 省级2位补0000，市级4位补00，区县级6位不补
+     * 非数字编码（如"资料暂缺"）返回空串，由调用方跳过，防止截断产生脏数据
      */
     protected function normalizeCode(string $apiCode): string
     {
+        // 非数字编码直接返回空串（历史问题：民政部API对台湾返回"资料暂缺"，
+        // 旧逻辑截取前6字节入库成 code='资料' 的脏数据）
+        if (!ctype_digit($apiCode)) {
+            return '';
+        }
+
         $code = $apiCode;
         $len = strlen($code);
 
@@ -1550,8 +1557,8 @@ class RegionService
                 $provinceCode = $this->normalizeCode($provinceData['code']);
                 $provinceName = $provinceData['name'];
 
-                // 跳过台湾省（数据暂缺）
-                if ($provinceCode === '830000') {
+                // 跳过无效编码（如台湾"资料暂缺"被 normalizeCode 过滤为空串）及台湾省
+                if ($provinceCode === '' || $provinceCode === '830000') {
                     continue;
                 }
 
@@ -1620,6 +1627,11 @@ class RegionService
             $childName = $childData['name'];
             $childLevel = (int) $childData['level'];
 
+            // 跳过无效编码（非数字代码过滤后为空）
+            if ($childCode === '') {
+                continue;
+            }
+
             if ($childLevel === Region::LEVEL_CITY) {
                 // 地级市：挂省级下
                 $cityResult = $this->upsertRegion($childCode, $childName, Region::LEVEL_CITY, $provinceId, $now);
@@ -1633,6 +1645,11 @@ class RegionService
                     foreach ($districtResult['data']['children'] as $districtData) {
                         $districtCode = $this->normalizeCode($districtData['code']);
                         $districtName = $districtData['name'];
+
+                        // 跳过无效编码
+                        if ($districtCode === '') {
+                            continue;
+                        }
 
                         $districtUpsert = $this->upsertRegion($districtCode, $districtName, Region::LEVEL_DISTRICT, $cityId, $now);
                         $inserted += $districtUpsert['inserted'];
@@ -1966,8 +1983,8 @@ class RegionService
             $provinceCode = $this->normalizeCode($provinceData['code']);
             $provinceName = $provinceData['name'];
 
-            // 跳过台湾省
-            if ($provinceCode === '830000') {
+            // 跳过无效编码（如台湾"资料暂缺"被过滤为空串）及台湾省
+            if ($provinceCode === '' || $provinceCode === '830000') {
                 continue;
             }
 
@@ -1988,6 +2005,11 @@ class RegionService
                 $childName = $childData['name'];
                 $childLevel = (int) $childData['level'];
 
+                // 跳过无效编码
+                if ($childCode === '') {
+                    continue;
+                }
+
                 $sourceMap[$childCode] = $childName;
 
                 if ($childLevel === Region::LEVEL_CITY) {
@@ -1996,6 +2018,9 @@ class RegionService
                     if ($districtResult['success'] && !empty($districtResult['data']['children'])) {
                         foreach ($districtResult['data']['children'] as $districtData) {
                             $districtCode = $this->normalizeCode($districtData['code']);
+                            if ($districtCode === '') {
+                                continue;
+                            }
                             $sourceMap[$districtCode] = $districtData['name'];
                         }
                         usleep(100000);
@@ -2239,6 +2264,12 @@ class RegionService
         foreach ($children as $provinceNode) {
             $provinceCode = $this->normalizeCode($provinceNode['code']);
             $provinceName = $provinceNode['name'];
+
+            // 跳过无效编码（如台湾"资料暂缺"被过滤为空串）
+            if ($provinceCode === '') {
+                continue;
+            }
+
             $provinces[$provinceCode] = $provinceName;
 
             $provinceChildren = $provinceNode['children'] ?? [];
@@ -2248,6 +2279,11 @@ class RegionService
                 $childName = $childNode['name'];
                 $childLevel = (int) ($childNode['level'] ?? 0);
 
+                // 跳过无效编码
+                if ($childCode === '') {
+                    continue;
+                }
+
                 if ($childLevel === Region::LEVEL_CITY) {
                     // 地级市
                     $cities[$childCode] = $childName;
@@ -2256,6 +2292,9 @@ class RegionService
                     $cityChildren = $childNode['children'] ?? [];
                     foreach ($cityChildren as $districtNode) {
                         $districtCode = $this->normalizeCode($districtNode['code']);
+                        if ($districtCode === '') {
+                            continue;
+                        }
                         $districts[$districtCode] = $districtNode['name'];
                     }
                 } elseif ($childLevel === Region::LEVEL_DISTRICT) {
@@ -2568,6 +2607,169 @@ class RegionService
             'failed' => $failed,
             'province' => $province->name,
         ];
+    }
+
+    /**
+     * 补全港澳台区划数据（阿里 DataV 数据源）
+     *
+     * 背景：民政部 API 对港澳台数据残缺（香港/澳门无子级、台湾代码为"资料暂缺"），
+     * 旧导入逻辑曾将"资料暂缺"截断为 code='资料' 的脏数据入库。
+     *
+     * 处理内容：
+     * 1. 台湾脏数据修正：code='资料' → 710000，并更新省级坐标
+     * 2. 香港（810000）：拉取 DataV full.json 补全 18 个区级节点（含坐标）
+     * 3. 澳门（820000）：拉取 DataV full.json 补全 8 个区级节点（含坐标）
+     * 4. 台湾（710000）：DataV 无下级数据，仅更新省级坐标
+     * 5. 重建 81/82 前缀省份的闭包表记录
+     */
+    public function importHmtRegionData(): array
+    {
+        $now = now()->format('Y-m-d H:i:s');
+        $fixedTaiwan = 0;
+        $inserted = 0;
+        $updated = 0;
+        $failed = 0;
+        $details = [];
+
+        try {
+            // 1. 修正台湾省级脏数据（code='资料' → 710000）
+            $taiwanDirty = Region::where('name', 'like', '%台湾%')->where('level', Region::LEVEL_PROVINCE)->get();
+            foreach ($taiwanDirty as $region) {
+                if (!ctype_digit($region->code)) {
+                    $region->code = '710000';
+                    $region->lon = null;
+                    $region->lat = null;
+                    $region->update_time = $now;
+                    $region->save();
+                    $fixedTaiwan++;
+                }
+            }
+
+            // 2. 港澳区级补全 + 台湾省级坐标（逐省处理）
+            $hmtProvinces = [
+                ['code' => '810000', 'name' => '香港特别行政区', 'prefix' => '81'],
+                ['code' => '820000', 'name' => '澳门特别行政区', 'prefix' => '82'],
+                ['code' => '710000', 'name' => '台湾省', 'prefix' => '71'],
+            ];
+
+            foreach ($hmtProvinces as $item) {
+                $provinceCode = $item['code'];
+
+                // 确保省级节点存在（不存在则创建）
+                $province = Region::where('code', $provinceCode)->first();
+                if (!$province) {
+                    $provinceId = DB::table('app_cmspro_region_region')->insertGetId([
+                        'code' => $provinceCode,
+                        'name' => $item['name'],
+                        'level' => Region::LEVEL_PROVINCE,
+                        'parent_id' => 0,
+                        'status' => 1,
+                        'create_time' => $now,
+                        'update_time' => $now,
+                    ]);
+                    $province = Region::find($provinceId);
+                    $inserted++;
+                }
+
+                // 拉取省级单文件更新省级自身坐标
+                $selfJson = $this->fetchGeojson($provinceCode);
+                $selfApplied = false;
+                if ($selfJson['success']) {
+                    $selfProps = $selfJson['data']['features'][0]['properties'] ?? [];
+                    $center = $selfProps['center'] ?? $selfProps['centroid'] ?? null;
+                    if (is_array($center) && count($center) >= 2 && is_numeric($center[0]) && is_numeric($center[1])) {
+                        $province->lon = (float) $center[0];
+                        $province->lat = (float) $center[1];
+                        $province->update_time = $now;
+                        $province->save();
+                        $selfApplied = true;
+                    }
+                }
+
+                // 拉取 _full 文件补全下级区划（台湾无 _full 文件，仅更新省级坐标）
+                $fullJson = $this->fetchGeojson($provinceCode . '_full');
+                $childInserted = 0;
+                $childUpdated = 0;
+                if ($fullJson['success']) {
+                    foreach ($fullJson['data']['features'] ?? [] as $feature) {
+                        $props = $feature['properties'] ?? [];
+                        $childCode = $props['adcode'] ?? null;
+                        if (!$childCode || !preg_match('/^\d{6}$/', (string) $childCode)) {
+                            $failed++;
+                            continue;
+                        }
+
+                        $center = $props['center'] ?? $props['centroid'] ?? null;
+                        if (!is_array($center) || count($center) < 2 || !is_numeric($center[0]) || !is_numeric($center[1])) {
+                            $failed++;
+                            continue;
+                        }
+
+                        // upsert 区级节点（区级直接挂省级下，与港澳行政层级一致）
+                        $existing = Region::where('code', $childCode)->first();
+                        $lon = (float) $center[0];
+                        $lat = (float) $center[1];
+
+                        if ($existing) {
+                            $existing->name = $props['name'] ?? $existing->name;
+                            $existing->level = Region::LEVEL_DISTRICT;
+                            $existing->parent_id = $province->id;
+                            $existing->status = 1;
+                            $existing->lon = $lon;
+                            $existing->lat = $lat;
+                            $existing->update_time = $now;
+                            $existing->save();
+                            $childUpdated++;
+                        } else {
+                            DB::table('app_cmspro_region_region')->insert([
+                                'code' => $childCode,
+                                'name' => $props['name'] ?? '',
+                                'level' => Region::LEVEL_DISTRICT,
+                                'parent_id' => $province->id,
+                                'status' => 1,
+                                'lon' => $lon,
+                                'lat' => $lat,
+                                'create_time' => $now,
+                                'update_time' => $now,
+                            ]);
+                            $childInserted++;
+                        }
+                    }
+                }
+
+                // 重建该省闭包表记录
+                $this->rebuildClosureForProvince($item['prefix']);
+
+                $details[] = [
+                    'code' => $provinceCode,
+                    'name' => $item['name'],
+                    'self_coord' => $selfApplied,
+                    'inserted' => $childInserted,
+                    'updated' => $childUpdated,
+                ];
+
+                $inserted += $childInserted;
+                $updated += $childUpdated;
+
+                usleep(100000);
+            }
+
+            $this->clearCache();
+
+            return [
+                'success' => true,
+                'message' => "港澳台数据补全完成，新增 " . ($inserted) . " 条，更新 {$updated} 条，修正台湾脏编码 {$fixedTaiwan} 条",
+                'fixed_taiwan' => $fixedTaiwan,
+                'inserted' => $inserted,
+                'updated' => $updated,
+                'failed' => $failed,
+                'details' => $details,
+                'stats' => $this->getStats(),
+            ];
+        } catch (\Throwable $e) {
+            Log::error('港澳台区划补全失败', ['error' => $e->getMessage()]);
+            return ['success' => false, 'message' => '补全失败: ' . $e->getMessage()];
+        }
     }
 
     /**

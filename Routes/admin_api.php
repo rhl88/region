@@ -43,5 +43,8 @@ Route::get('/geo-stats', [RegionController::class, 'geoStats']);
 Route::get('/geojson-provinces', [RegionController::class, 'geojsonProvinces']);
 Route::post('/import-geo-data-from-geojson', [RegionController::class, 'importGeoDataFromGeojson']);
 
+// 港澳台区划补全路由（阿里 DataV 源）
+Route::post('/import-hmt-region', [RegionController::class, 'importHmtRegion']);
+
 // list.json省份列表（用于数据库为空时的首次导入）
 Route::get('/list-json-provinces', [RegionController::class, 'listJsonProvinces']);

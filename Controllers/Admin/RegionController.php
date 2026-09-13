@@ -635,6 +635,28 @@ class RegionController extends Controller
     }
 
     /**
+     * 补全港澳台区划数据（阿里 DataV 源，修复港澳无子级、台湾脏编码问题）
+     */
+    public function importHmtRegion(): JsonResponse
+    {
+        set_time_limit(300);
+
+        $result = $this->regionService->importHmtRegionData();
+
+        return response()->json([
+            'code' => $result['success'] ? 0 : 1,
+            'message' => $result['message'],
+            'data' => [
+                'fixed_taiwan' => $result['fixed_taiwan'] ?? 0,
+                'inserted' => $result['inserted'] ?? 0,
+                'updated' => $result['updated'] ?? 0,
+                'failed' => $result['failed'] ?? 0,
+                'details' => $result['details'] ?? [],
+            ],
+        ]);
+    }
+
+    /**
      * 从 geojson.cn 按省导入地理坐标（AJAX分步调用）
      */
     public function importGeoDataFromGeojson(Request $request): JsonResponse
