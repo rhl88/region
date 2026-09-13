@@ -1,6 +1,6 @@
 # CmsPro 中国行政区划应用扩展指南
 
-> 版本：1.4.0 | 更新日期：2026-08-12
+> 版本：1.5.0 | 更新日期：2026-09-13
 > 适用系统：CmsPro v5.0.0+
 > 应用ID：`cmspro.region`
 
@@ -244,6 +244,9 @@ $path = $hookManager->applyFilter('region.path', '110101');
 | `/api/admin/cmspro/region/import-geo-data` | POST | 无 | 全量导入地理位置数据（保留兼容） |
 | `/api/admin/cmspro/region/import-geo-data-by-province` | POST | `province_code` 省份代码 | 按省份导入地理位置数据 |
 | `/api/admin/cmspro/region/geo-stats` | GET | 无 | 获取地理位置数据统计 |
+| `/api/admin/cmspro/region/geojson-provinces` | GET | 无 | 获取可在线更新坐标（GeoJSON）的省份列表 |
+| `/api/admin/cmspro/region/import-geo-data-from-geojson` | POST | `province_code` 省份代码 | 从阿里 DataV GeoJSON 按省在线更新坐标 |
+| `/api/admin/cmspro/region/import-hmt-region` | POST | 无 | 港澳台区划补全（修正台湾脏编码、补全港澳区级） |
 
 **API 响应格式**：
 
@@ -874,3 +877,4 @@ ORDER BY c.depth DESC;
 | 1.2.0 | 2026-06-24 | 开发团队 | 新增民政部 API 差异化对比更新、地理位置数据导入（经纬度） |
 | 1.3.0 | 2026-06-25 | 开发团队 | 补充按区县导入街道数据、按省份导入地理位置数据等分步导入能力 |
 | 1.4.0 | 2026-08-12 | 开发团队 | 文档审查更新：API 接口列表补充按省份导入三级数据（import-by-province）、区划列表（list）、缓存清除（clear-cache）、数据缓存文件下载/清理（download-districts/download-district-data/download-list-json/clear-data-files）、GitHub 数据源检测（check-github）、闭包表重建（rebuild-closure）、民政部全量导入（import-from-mca）、list.json 省份列表（list-json-provinces）等接口 |
+| 1.5.0 | 2026-09-13 | 开发团队 | 新增「一键数据更新」：后台数据管理页单按钮串联四阶段在线更新流程（① 三级区划：民政部 API 逐省分步 → ② 港澳台补全：阿里 DataV，失败不中止 → ③ 街道数据：逐区县民政部 API（本地缓存优先），失败区县自动追加一轮重试 → ④ 最新坐标：阿里 DataV GeoJSON 逐省），统一进度条按阶段分段映射（0~5%/5~30%/30~85%/85~99%），执行期间按钮互斥；官方数据包（Data/ 目录）作为新装基线集合数据 |

@@ -17,6 +17,9 @@
         .import-progress{margin-top:10px;padding:15px;background:#fffbe6;border:1px solid #ffe58f;border-radius:4px;display:none;}
         .import-progress .layui-progress{margin-top:8px;}
         .import-log{max-height:200px;overflow-y:auto;margin-top:8px;padding:8px;background:#fafafa;border-radius:4px;font-size:12px;line-height:1.8;color:#666;}
+        .one-key-step{display:inline-block;margin-right:14px;padding:2px 10px;border-radius:10px;background:#f2f2f2;color:#999;}
+        .one-key-step.active{background:#16b777;color:#fff;}
+        .one-key-step.done{background:#e1f3d8;color:#67c23a;}
     </style>
 </head>
 <body>
@@ -47,6 +50,7 @@
     <div class="layui-card" style="margin-top:15px;">
         <div class="layui-card-body">
             <div style="margin-bottom:15px;">
+                <button class="layui-btn" id="oneKeyUpdateBtn" style="background:#16b777;"><i class="fa fa-bolt"></i> 一键数据更新</button>
                 <button class="layui-btn layui-btn-normal" id="importBtn"><i class="fa fa-download"></i> 导入三级数据</button>
                 <button class="layui-btn" id="importStreetBtn"><i class="fa fa-building"></i> 导入街道数据</button>
                 <button class="layui-btn layui-btn-success" id="importGeoBtn"><i class="fa fa-map-marker"></i> 导入地理位置</button>
@@ -143,6 +147,27 @@
                     <div class="layui-progress-bar" lay-percent="0%" id="hmtProgressBar"></div>
                 </div>
                 <div class="import-log" id="hmtImportLog"></div>
+            </div>
+
+            {{-- 一键数据更新进度（四阶段串联） --}}
+            <div class="import-progress" id="oneKeyProgress" style="display:none;">
+                <div style="display:flex;align-items:center;justify-content:space-between;">
+                    <span id="oneKeyText">正在准备一键数据更新...</span>
+                    <div>
+                        <span id="oneKeyCount"></span>
+                        <button type="button" id="closeOneKeyProgressBtn" style="margin-left:10px;background:none;border:none;cursor:pointer;font-size:16px;color:#999;" title="关闭">&times;</button>
+                    </div>
+                </div>
+                <div style="margin-top:10px;font-size:12px;">
+                    <span id="oneKeyStep1" class="one-key-step">① 三级区划</span>
+                    <span id="oneKeyStep2" class="one-key-step">② 港澳台补全</span>
+                    <span id="oneKeyStep3" class="one-key-step">③ 街道数据</span>
+                    <span id="oneKeyStep4" class="one-key-step">④ 最新坐标</span>
+                </div>
+                <div class="layui-progress" lay-showpercent="true" lay-filter="oneKeyImportProgress">
+                    <div class="layui-progress-bar" lay-percent="0%" id="oneKeyProgressBar"></div>
+                </div>
+                <div class="import-log" id="oneKeyImportLog"></div>
             </div>
 
             <div class="import-progress" id="downloadProgress">
@@ -1319,6 +1344,394 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         $('#importHmtBtn').removeClass('layui-btn-disabled').prop('disabled', false);
         $('#hmtProgress').hide();
     }
+
+    // 一键数据更新（四阶段串联：三级区划 → 港澳台补全 → 街道数据 → 最新坐标）
+    var oneKeyRunning = false;
+    var oneKeyFailedDistricts = [];   // 街道阶段失败区县（重试用）
+    var oneKeyFailedGeoProvinces = []; // 坐标阶段失败省份（重试用）
+    var oneKeyCurrentIndex = 0;       // 街道阶段当前区县索引
+    var oneKeyTotalImported = 0;      // 街道阶段累计导入条数
+    var oneKeyGeoIndex = 0;            // 坐标阶段当前省份索引
+    var oneKeyGeoUpdated = 0;          // 坐标阶段累计更新条数
+    var oneKeyL3Provinces = [];        // 三级阶段省份列表
+    var oneKeyL3Index = 0;             // 三级阶段当前省份索引
+    var oneKeyL3Inserted = 0;          // 三级阶段累计新增
+    var oneKeyL3Updated = 0;           // 三级阶段累计更新
+
+    $('#oneKeyUpdateBtn').on('click', function(){
+        if(oneKeyRunning){
+            layer.msg('一键数据更新正在执行中，请等待完成', {icon: 0});
+            return;
+        }
+        if(level3ImportRunning || streetImportRunning || geoImportRunning || geojsonImportRunning || updateRunning || hmtImportRunning){
+            layer.msg('其他导入任务正在运行中，请等待完成后再执行', {icon: 0});
+            return;
+        }
+
+        layer.confirm(
+            '<span style="color:#e6a23c;font-weight:bold;">⚠ 一键数据更新（全在线源）</span><br><br>' +
+            '将按顺序自动执行四个阶段（需联网）：<br>' +
+            '① 三级区划：从民政部 API 逐省更新省/市/区县<br>' +
+            '② 港澳台补全：从阿里 DataV 修正台湾编码、补全港澳区级<br>' +
+            '③ 街道数据：逐区县拉取（约4万+条，耗时最长）<br>' +
+            '④ 最新坐标：从阿里 DataV 逐省更新坐标<br><br>' +
+            '<span style="color:#e6a23c;">全程预计耗时较长（街道阶段为大头），执行期间请不要关闭或刷新页面。</span><br><br>' +
+            '确定要开始吗？',
+            {icon: 3, title: '一键数据更新', btn: ['开始更新', '取消']},
+            function(index){
+                layer.close(index);
+                startOneKeyUpdate();
+            }
+        );
+    });
+
+    function startOneKeyUpdate(){
+        oneKeyRunning = true;
+        oneKeyFailedDistricts = [];
+        oneKeyFailedGeoProvinces = [];
+        oneKeyCurrentIndex = 0;
+        oneKeyTotalImported = 0;
+        oneKeyGeoIndex = 0;
+        oneKeyGeoUpdated = 0;
+        oneKeyL3Provinces = [];
+        oneKeyL3Index = 0;
+        oneKeyL3Inserted = 0;
+        oneKeyL3Updated = 0;
+        $('#oneKeyUpdateBtn').addClass('layui-btn-disabled').prop('disabled', true);
+        // 禁用其余全部按钮，避免并发冲突
+        $('#importBtn, #importStreetBtn, #importGeoBtn, #importGeojsonBtn, #importHmtBtn, #updateDataBtn')
+            .addClass('layui-btn-disabled').prop('disabled', true);
+        $('#oneKeyProgress').show();
+        $('#oneKeyImportLog').html('');
+        $('#oneKeyCount').text('');
+        $('#oneKeyText').text('正在准备一键数据更新...');
+        element.progress('oneKeyImportProgress', '0%');
+        resetOneKeySteps();
+
+        appendOneKeyLog('【开始】一键数据更新，共 4 个阶段');
+        setTimeout(runOneKeyStep1, 100);
+    }
+
+    function resetOneKeySteps(){
+        for(var i = 1; i <= 4; i++){
+            $('#oneKeyStep' + i).removeClass('active done');
+        }
+    }
+
+    function setOneKeyStep(step){
+        for(var i = 1; i <= 4; i++){
+            var el = $('#oneKeyStep' + i);
+            if(i < step) el.removeClass('active').addClass('done');
+            else if(i === step) el.removeClass('done').addClass('active');
+            else el.removeClass('active done');
+        }
+    }
+
+    function appendOneKeyLog(msg){
+        var log = $('#oneKeyImportLog');
+        log.html(log.html() + msg + '<br>');
+        log.scrollTop(log[0].scrollHeight);
+    }
+
+    function setOneKeyProgress(percent){
+        element.progress('oneKeyImportProgress', percent + '%');
+    }
+
+    function finishOneKeyUpdate(errorMsg){
+        setOneKeyProgress(100);
+        $('#oneKeyUpdateBtn').removeClass('layui-btn-disabled').prop('disabled', false);
+        $('#importBtn, #importStreetBtn, #importGeoBtn, #importGeojsonBtn, #importHmtBtn, #updateDataBtn')
+            .removeClass('layui-btn-disabled').prop('disabled', false);
+
+        if(errorMsg){
+            $('#oneKeyText').text('一键数据更新失败');
+            appendOneKeyLog('<span style="color:red;">✗ ' + errorMsg + '</span>');
+        } else {
+            $('#oneKeyText').text('一键数据更新完成！');
+            setOneKeyProgress(100);
+            appendOneKeyLog('【结束】全部阶段执行完毕');
+        }
+        for(var i = 1; i <= 4; i++){
+            $('#oneKeyStep' + i).removeClass('active').addClass('done');
+        }
+        refreshStats();
+        table.reload('regionTable');
+        oneKeyRunning = false;
+    }
+
+    // 阶段1：民政部 API 按省分步更新三级区划（与「导入三级数据」按钮同模式，避免单请求超时）
+    function runOneKeyStep1(){
+        setOneKeyStep(1);
+        $('#oneKeyText').text('【阶段1/4】正在获取省份列表...');
+        $('#oneKeyCount').text('');
+        appendOneKeyLog('【阶段1】三级区划（民政部 API，按省分步）...');
+
+        $.get('/api/admin/cmspro/region/list-json-provinces', function(res){
+            if(res.code !== 0 || !res.data || res.data.length === 0){
+                finishOneKeyUpdate('获取省份列表失败，无法更新三级区划');
+                return;
+            }
+            oneKeyL3Provinces = res.data;
+            appendOneKeyLog('共 ' + oneKeyL3Provinces.length + ' 个省份，开始更新...');
+            importNextL3Province();
+        }).fail(function(){
+            finishOneKeyUpdate('获取省份列表失败，请检查网络');
+        });
+    }
+
+    function importNextL3Province(){
+        var total = oneKeyL3Provinces.length;
+
+        if(oneKeyL3Index >= total){
+            $('#oneKeyCount').text('');
+            appendOneKeyLog('<span style="color:green;">✓ 三级区划完成：新增 ' + oneKeyL3Inserted + ' 条，更新 ' + oneKeyL3Updated + ' 条</span>');
+            setOneKeyProgress(5);
+            setTimeout(runOneKeyStep2, 100);
+            return;
+        }
+
+        var province = oneKeyL3Provinces[oneKeyL3Index];
+        oneKeyL3Index++;
+        setOneKeyProgress(Math.round((oneKeyL3Index / total) * 5));
+        $('#oneKeyCount').text(oneKeyL3Index + '/' + total);
+        $('#oneKeyText').text('【阶段1/4】正在更新三级区划: ' + province.name + '...');
+
+        $.post('/api/admin/cmspro/region/import-by-province', {province_code: province.code}, function(res){
+            if(res.code === 0){
+                var data = res.data || {};
+                oneKeyL3Inserted += (data.inserted || 0);
+                oneKeyL3Updated += (data.updated || 0);
+            } else {
+                appendOneKeyLog('<span style="color:red;">✗ ' + province.name + ': ' + (res.message || '更新失败') + '</span>');
+            }
+            setTimeout(importNextL3Province, 50);
+        }).fail(function(){
+            appendOneKeyLog('<span style="color:red;">✗ ' + province.name + ': 请求失败</span>');
+            setTimeout(importNextL3Province, 50);
+        });
+    }
+
+    // 阶段2：港澳台补全（单请求，DataV 源）
+    function runOneKeyStep2(){
+        setOneKeyStep(2);
+        $('#oneKeyText').text('【阶段2/4】正在补全港澳台区划（阿里 DataV）...');
+        appendOneKeyLog('【阶段2】港澳台补全（阿里 DataV）...');
+
+        $.post('/api/admin/cmspro/region/import-hmt-region', function(res){
+            if(res.code === 0){
+                var data = res.data || {};
+                if(data.fixed_taiwan > 0){
+                    appendOneKeyLog('<span style="color:green;">✓ 台湾省级脏编码已修正（' + data.fixed_taiwan + ' 条）</span>');
+                }
+                appendOneKeyLog('<span style="color:green;">✓ 港澳台补全完成：新增 ' + (data.inserted || 0) + ' 条，更新 ' + (data.updated || 0) + ' 条</span>');
+                if(data.failed > 0){
+                    appendOneKeyLog('<span style="color:orange;">⚠ ' + data.failed + ' 条数据异常未处理</span>');
+                }
+                setOneKeyProgress(30);
+                setTimeout(runOneKeyStep3, 100);
+            } else {
+                // 港澳台补全失败不中止整体流程，记录警告继续
+                appendOneKeyLog('<span style="color:orange;">⚠ 港澳台补全失败（' + (res.message || '未知错误') + '），继续后续阶段</span>');
+                setTimeout(runOneKeyStep3, 100);
+            }
+        }).fail(function(){
+            appendOneKeyLog('<span style="color:orange;">⚠ 港澳台补全请求失败，继续后续阶段</span>');
+            setTimeout(runOneKeyStep3, 100);
+        });
+    }
+
+    // 阶段3：街道数据（逐区县串行，收集区县后导入）
+    function runOneKeyStep3(){
+        setOneKeyStep(3);
+        $('#oneKeyText').text('【阶段3/4】正在收集街道数据区县列表...');
+        $('#oneKeyCount').text('');
+        appendOneKeyLog('【阶段3】街道数据（民政部 API，缓存优先）...');
+
+        $.get('/api/admin/cmspro/region/provinces', function(res){
+            if(res.code !== 0 || !res.data || res.data.length === 0){
+                appendOneKeyLog('<span style="color:orange;">⚠ 库中无省份数据，跳过街道阶段</span>');
+                setTimeout(runOneKeyStep4, 100);
+                return;
+            }
+
+            var provinces = res.data;
+            var provinceIndex = 0;
+            var allDistricts = [];
+
+            // 逐省收集区县列表
+            function fetchNextProvinceDistricts(){
+                if(provinceIndex >= provinces.length){
+                    if(allDistricts.length === 0){
+                        appendOneKeyLog('<span style="color:orange;">⚠ 未收集到区县，跳过街道阶段</span>');
+                        setTimeout(runOneKeyStep4, 100);
+                        return;
+                    }
+                    appendOneKeyLog('共收集 ' + allDistricts.length + ' 个区县，开始导入街道...');
+                    importNextDistrict();
+                    return;
+                }
+
+                var province = provinces[provinceIndex];
+                provinceIndex++;
+
+                $.get('/api/admin/cmspro/region/street-districts', {province_code: province.code}, function(res){
+                    if(res.code === 0 && res.data && res.data.length > 0){
+                        for(var i = 0; i < res.data.length; i++){
+                            allDistricts.push({
+                                code: res.data[i].code,
+                                name: res.data[i].name,
+                                provinceName: province.name
+                            });
+                        }
+                    }
+                    fetchNextProvinceDistricts();
+                }).fail(function(){
+                    appendOneKeyLog(province.name + ': 获取区县列表失败，跳过');
+                    fetchNextProvinceDistricts();
+                });
+            }
+
+            // 逐区县导入街道
+            function importNextDistrict(){
+                var total = allDistricts.length;
+
+                if(oneKeyFailedDistricts.length > 0 && oneKeyFailedDistricts[0]._retried !== true){
+                    // 首轮结束，重试失败区县
+                    var failed = oneKeyFailedDistricts.slice();
+                    oneKeyFailedDistricts = [];
+                    for(var i = 0; i < failed.length; i++){
+                        failed[i]._retried = true;
+                        allDistricts.push(failed[i]);
+                    }
+                    appendOneKeyLog('<span style="color:orange;">⚠ ' + failed.length + ' 个区县失败，追加重试...</span>');
+                    setTimeout(importNextDistrict, 500);
+                    return;
+                }
+
+                if(oneKeyCurrentIndex >= total){
+                    $('#oneKeyCount').text('');
+                    if(oneKeyFailedDistricts.length > 0){
+                        appendOneKeyLog('<span style="color:red;">✗ 仍有 ' + oneKeyFailedDistricts.length + ' 个区县导入失败</span>');
+                    }
+                    appendOneKeyLog('<span style="color:green;">✓ 街道阶段完成，共导入 ' + oneKeyTotalImported + ' 条</span>');
+                    oneKeyCurrentIndex = 0;
+                    oneKeyTotalImported = 0;
+                    setTimeout(runOneKeyStep4, 100);
+                    return;
+                }
+
+                var district = allDistricts[oneKeyCurrentIndex];
+                oneKeyCurrentIndex++;
+                var percent = Math.round((oneKeyCurrentIndex / total) * 100);
+                // 街道阶段占整体进度的 30%~85%
+                setOneKeyProgress(30 + Math.round(percent * 0.55));
+                $('#oneKeyCount').text(oneKeyCurrentIndex + '/' + total);
+                $('#oneKeyText').text('【阶段3/4】正在导入街道: ' + district.provinceName + ' - ' + district.name + '...');
+
+                $.post('/api/admin/cmspro/region/import-street-by-district-from-mca', {district_code: district.code}, function(res){
+                    if(res.code === 0){
+                        var data = res.data || {};
+                        oneKeyTotalImported += (data.inserted || 0);
+                        if(data.inserted > 0 || data.updated > 0){
+                            appendOneKeyLog(district.provinceName + ' - ' + district.name + ': 新增' + (data.inserted || 0) + '，更新' + (data.updated || 0));
+                        }
+                    } else {
+                        appendOneKeyLog('<span style="color:red;">✗ ' + district.provinceName + ' - ' + district.name + ': ' + (res.message || '导入失败') + '</span>');
+                        if(district._retried !== true){
+                            oneKeyFailedDistricts.push(district);
+                        }
+                    }
+                    setTimeout(importNextDistrict, 50);
+                }).fail(function(){
+                    appendOneKeyLog('<span style="color:red;">✗ ' + district.provinceName + ' - ' + district.name + ': 请求失败</span>');
+                    if(district._retried !== true){
+                        oneKeyFailedDistricts.push(district);
+                    }
+                    setTimeout(importNextDistrict, 50);
+                });
+            }
+
+            fetchNextProvinceDistricts();
+        }).fail(function(){
+            appendOneKeyLog('<span style="color:orange;">⚠ 获取省份列表失败，跳过街道阶段</span>');
+            setTimeout(runOneKeyStep4, 100);
+        });
+    }
+
+    // 阶段4：最新坐标（GeoJSON 逐省）
+    function runOneKeyStep4(){
+        setOneKeyStep(4);
+        $('#oneKeyText').text('【阶段4/4】正在获取可更新省份...');
+        $('#oneKeyCount').text('');
+        appendOneKeyLog('【阶段4】最新坐标（阿里 DataV GeoJSON）...');
+
+        $.get('/api/admin/cmspro/region/geojson-provinces', function(res){
+            if(res.code !== 0 || !res.data || res.data.length === 0){
+                appendOneKeyLog('<span style="color:orange;">⚠ 无可更新省份，流程结束</span>');
+                finishOneKeyUpdate();
+                return;
+            }
+
+            var provinces = res.data;
+            var total = provinces.length;
+
+            function importNextGeoProvince(){
+                if(oneKeyGeoIndex >= total){
+                    $('#oneKeyCount').text('');
+                    if(oneKeyFailedGeoProvinces.length > 0){
+                        appendOneKeyLog('<span style="color:red;">✗ 仍有 ' + oneKeyFailedGeoProvinces.length + ' 个省份坐标更新失败</span>');
+                    }
+                    appendOneKeyLog('<span style="color:green;">✓ 坐标阶段完成，共更新 ' + oneKeyGeoUpdated + ' 条</span>');
+                    oneKeyGeoIndex = 0;
+                    oneKeyGeoUpdated = 0;
+                    finishOneKeyUpdate();
+                    return;
+                }
+
+                var province = provinces[oneKeyGeoIndex];
+                oneKeyGeoIndex++;
+                var percent = Math.round((oneKeyGeoIndex / total) * 100);
+                // 坐标阶段占整体进度的 85%~99%
+                setOneKeyProgress(85 + Math.round(percent * 0.14));
+                $('#oneKeyCount').text(oneKeyGeoIndex + '/' + total);
+                $('#oneKeyText').text('【阶段4/4】正在更新坐标: ' + province.name + '...');
+
+                $.post('/api/admin/cmspro/region/import-geo-data-from-geojson', {province_code: province.code}, function(res){
+                    if(res.code === 0){
+                        var data = res.data || {};
+                        oneKeyGeoUpdated += (data.updated || 0);
+                        var parts = [];
+                        if(data.updated > 0) parts.push('更新' + data.updated);
+                        if(data.skipped > 0) parts.push('坐标相同' + data.skipped);
+                        if(data.missing > 0) parts.push('<span style="color:orange;">未匹配' + data.missing + '</span>');
+                        if(data.failed > 0) parts.push('<span style="color:red;">异常' + data.failed + '</span>');
+                        appendOneKeyLog(province.name + ': ' + (parts.length > 0 ? parts.join('，') + '条' : '无数据'));
+                    } else {
+                        appendOneKeyLog('<span style="color:red;">✗ ' + province.name + ': ' + (res.message || '更新失败') + '</span>');
+                        oneKeyFailedGeoProvinces.push(province);
+                    }
+                    setTimeout(importNextGeoProvince, 50);
+                }).fail(function(){
+                    appendOneKeyLog('<span style="color:red;">✗ ' + province.name + ': 请求失败</span>');
+                    oneKeyFailedGeoProvinces.push(province);
+                    setTimeout(importNextGeoProvince, 50);
+                });
+            }
+
+            importNextGeoProvince();
+        }).fail(function(){
+            appendOneKeyLog('<span style="color:orange;">⚠ 获取省份列表失败，流程结束</span>');
+            finishOneKeyUpdate();
+        });
+    }
+
+    $('#closeOneKeyProgressBtn').on('click', function(){
+        if(oneKeyRunning){
+            layer.msg('任务执行中，暂不能关闭面板', {icon: 0});
+            return;
+        }
+        $('#oneKeyProgress').slideUp(200);
+    });
 
     // 刷新统计
     function refreshStats(){

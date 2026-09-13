@@ -24,7 +24,10 @@ return new class extends Migration
             $table->index(['ancestor', 'depth'], 'idx_ancestor_depth');
         });
 
-        DB::statement("ALTER TABLE `app_cmspro_region_closure` COMMENT '中国行政区划闭包表'");
+        // 表注释为 MySQL 专属语法，SQLite（测试库）不支持
+        if (DB::connection()->getDriverName() === 'mysql') {
+            DB::statement("ALTER TABLE `app_cmspro_region_closure` COMMENT '中国行政区划闭包表'");
+        }
     }
 
     public function down(): void

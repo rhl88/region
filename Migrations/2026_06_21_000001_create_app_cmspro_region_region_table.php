@@ -29,7 +29,10 @@ return new class extends Migration
             $table->index(['parent_id', 'level'], 'idx_parent_level');
         });
 
-        DB::statement("ALTER TABLE `app_cmspro_region_region` COMMENT '中国行政区划主表'");
+        // 表注释为 MySQL 专属语法，SQLite（测试库）不支持
+        if (DB::connection()->getDriverName() === 'mysql') {
+            DB::statement("ALTER TABLE `app_cmspro_region_region` COMMENT '中国行政区划主表'");
+        }
     }
 
     public function down(): void
