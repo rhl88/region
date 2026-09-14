@@ -76,9 +76,9 @@
             @if(!$hasLevel3)
             <div class="import-guide">
                 <div class="guide-title"><i class="fa fa-exclamation-triangle"></i> 三级区划数据未导入</div>
-                <div class="guide-desc">省/市/区县三级数据是区划选择器的基础，未导入时无法进行数据演示。请先导入三级数据后再使用演示功能。</div>
+                <div class="guide-desc">省/市/区县三级数据是区划选择器的基础，未导入时无法进行数据演示。请先在数据管理页点击「一键导入」完成全量数据导入（无需联网），或仅导入三级数据后再使用演示功能。</div>
                 <div class="guide-action">
-                    <a href="/admin/cmspro/region" class="layui-btn layui-btn-normal layui-btn-sm"><i class="fa fa-download"></i> 前往导入三级数据</a>
+                    <a href="/admin/cmspro/region" class="layui-btn layui-btn-normal layui-btn-sm"><i class="fa fa-database"></i> 前往一键导入</a>
                 </div>
             </div>
             @endif
@@ -163,7 +163,7 @@
             @else
             <div class="empty-state">
                 <div class="empty-icon"><i class="fa fa-database"></i></div>
-                <div class="empty-text">三级区划数据未导入，无法演示区划选择器<br>请先导入三级数据</div>
+                <div class="empty-text">三级区划数据未导入，无法演示区划选择器<br>请先在数据管理页点击「一键导入」</div>
             </div>
             @endif
         </div>

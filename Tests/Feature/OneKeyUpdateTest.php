@@ -47,6 +47,8 @@ class OneKeyUpdateTest extends RegionTestCase
             ->assertSee("startOneKeyUpdate('一键数据更新', 'online')", false)
             // 本地模式第三阶段使用 Excel 全量导入接口
             ->assertSee('import-geo-data', false)
+            // 空数据引导：首次安装提示点击「一键导入」
+            ->assertSee('请点击「一键导入」按钮导入', false)
             // 悬停下拉菜单（两个主按钮各自收纳单项入口；更新菜单5项含港澳台/坐标，导入菜单3项为本地链路阶段）
             ->assertSee('one-key-menu', false)
             ->assertSee('one-key-import-menu', false)

@@ -1899,10 +1899,10 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         });
     }
 
-    // 检测是否已有数据，无数据时提示导入
+    // 检测是否已有数据，无数据时提示一键导入（本地数据链路）
     $.get('/api/admin/cmspro/region/stats', function(res){
         if(res.code === 0 && res.data.total === 0){
-            layer.msg('暂无区划数据，请点击「导入三级数据」按钮导入', {icon: 0, time: 5000});
+            layer.msg('暂无区划数据，请点击「一键导入」按钮导入', {icon: 0, time: 5000});
         }
     });
 });
