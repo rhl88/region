@@ -1540,8 +1540,11 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     }
 
     function appendOneKeyLog(msg){
+        var now = new Date();
+        var pad = function(n){ return n < 10 ? '0' + n : '' + n; };
+        var time = pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
         var log = $('#oneKeyImportLog');
-        log.html(log.html() + msg + '<br>');
+        log.html(log.html() + msg + ' <span style="color:#999;font-size:11px;margin-left:6px;">' + time + '</span><br>');
         log.scrollTop(log[0].scrollHeight);
     }
 
