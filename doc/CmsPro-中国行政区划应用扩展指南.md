@@ -1,6 +1,6 @@
 # CmsPro 中国行政区划应用扩展指南
 
-> 版本：1.5.0 | 更新日期：2026-09-13
+> 版本：1.6.0 | 更新日期：2026-11-06
 > 适用系统：CmsPro v5.0.0+
 > 应用ID：`cmspro.region`
 
@@ -19,6 +19,7 @@
 - **缓存机制**：查询结果自动缓存24小时，数据更新时自动清除；街道数据支持本地文件缓存
 - **数据管理**：后台提供数据导入/更新、街道分步导入、缓存清除、级联预览、数据对比更新等功能
 - **地理位置数据**：支持导入城市和区县的经纬度信息，便于地图定位和距离计算
+- **快照导出**：将库中全量区划导出为标准化 ZIP 快照包（regions.json + meta.json），供上传版本服务器（Versionsvr「区划数据」服务）发布分发，使区划数据更新与本应用发版解耦
 
 ### 数据源
 
@@ -670,6 +671,37 @@ $result = $regionService->importGeoDataFromGeojson('340000');
 
 > 覆盖说明：2023-24 最新设市县（米林市、错那市、和康县、和安县、新星市、白杨市、草湖市）DataV 暂未收录，无法通过该方式获取坐标。
 
+### 4.17 RegionSnapshotService 快照导出服务
+
+独立于 `RegionService` 的快照导出服务（`Services/RegionSnapshotService.php`），将库中全量区划导出为标准化 ZIP 快照包，供上传版本服务器（Versionsvr 应用「区划数据」服务）发布分发——各站点区划应用在线同步，使区划数据更新与本应用发版解耦。
+
+**后台入口**：数据管理页「导出快照包」按钮（`GET /api/admin/cmspro/region/export-snapshot?version=可空`），版本号留空自动生成 `YYYYMMDD001`。
+
+```php
+use App\Apps\CmsproRegion\Services\RegionSnapshotService;
+
+$snapshotService = app(RegionSnapshotService::class);
+$snapshot = $snapshotService->export('20261106001');
+// [
+//     'file_path' => '...\storage\app\cmspro-region-data-20261106001.zip',
+//     'file_name' => 'cmspro-region-data-20261106001.zip',
+//     'version' => '20261106001',
+//     'count' => 47362,            // 导出记录总数
+//     'stats' => [...],            // 四级统计
+//     'file_size' => 2103245,      // 快照包字节数
+//     'checksum' => 'sha256...',   // 快照包 SHA-256 摘要
+// ]
+```
+
+**导出包契约**（与版本服务器校验规则 `Versionsvr RegionDataService::validateRegions` 完全对齐）：
+
+| 文件 | 内容 |
+|------|------|
+| `regions.json` | 全量记录数组 `[{code, name, level, parent_code, status, lon, lat}, ...]`，按 level + code 排序（父级先于子级）；顶级记录 `parent_code` 为 `'0'`；status 0（禁用）与 1（启用）全量导出；无坐标记录 `lon`/`lat` 为 null |
+| `meta.json` | `{version, count, stats: {province, city, district, street}, generated_at（Y-m-d H:i:s）, format: "code,name,level,parent_code,status,lon,lat"}` |
+
+**导出规则**：库中须已有省级（level=1）数据；单次上限 20 万条（与版本服务器一致）；版本号仅允许字母/数字/点/下划线/连字符（≤32 位）；导出流式分块（1000 条/块）避免大库内存溢出；调用方负责下载后删除快照包文件。
+
 ***
 
 ## 五、使用场景示例
@@ -865,6 +897,7 @@ ORDER BY c.depth DESC;
 10. **安装与导入分离**：安装应用仅创建数据库表，需在后台手动导入数据，避免安装超时
 11. **API调用频率**：街道数据导入时每处理一个区县暂停100ms，避免请求过快导致API限流
 12. **地理位置数据**：经纬度信息仅在城市和区县级别可用，街道级别暂不支持；数据源为本地Excel文件 `Data/地理位置编码.xlsx`，需手动点击「导入地理位置」按钮导入
+13. **快照导出契约稳定性**：导出包内 `regions.json` / `meta.json` 的文件名、字段集与排序规则为版本服务器（Versionsvr「区划数据」服务）与消费端（各站点区划应用在线同步）共同依赖的分发契约，调整任何一项前须同步评估版本服务器校验规则与各站点消费端兼容性，禁止单方面变更
 
 ***
 
@@ -878,3 +911,4 @@ ORDER BY c.depth DESC;
 | 1.3.0 | 2026-06-25 | 开发团队 | 补充按区县导入街道数据、按省份导入地理位置数据等分步导入能力 |
 | 1.4.0 | 2026-08-12 | 开发团队 | 文档审查更新：API 接口列表补充按省份导入三级数据（import-by-province）、区划列表（list）、缓存清除（clear-cache）、数据缓存文件下载/清理（download-districts/download-district-data/download-list-json/clear-data-files）、GitHub 数据源检测（check-github）、闭包表重建（rebuild-closure）、民政部全量导入（import-from-mca）、list.json 省份列表（list-json-provinces）等接口 |
 | 1.5.0 | 2026-09-13 | 开发团队 | 新增「一键数据更新」：后台数据管理页单按钮串联四阶段在线更新流程（① 三级区划：民政部 API 逐省分步 → ② 港澳台补全：阿里 DataV，失败不中止 → ③ 街道数据：逐区县民政部 API（本地缓存优先），失败区县自动追加一轮重试 → ④ 最新坐标：阿里 DataV GeoJSON 逐省），统一进度条按阶段分段映射（0~5%/5~30%/30~85%/85~99%），执行期间按钮互斥；官方数据包（Data/ 目录）作为新装基线集合数据 |
+| 1.6.0 | 2026-11-06 | 开发团队 | 新增 `RegionSnapshotService` 快照导出服务（4.17 节）与「导出快照包」后台按钮：将库中全量区划导出为标准化 ZIP 快照包（regions.json + meta.json），供上传版本服务器（Versionsvr「区划数据」服务）发布分发；导出契约与版本服务器校验规则完全对齐（level+code 排序、parent_id→parent_code 转换、顶级 parent_code='0'、status 0/1 全量、无坐标 null、meta 含 version/count/stats/generated_at/format）；新增权限 `cmspro.region.export` |

@@ -1,0 +1,250 @@
+<?php
+
+namespace App\Apps\CmsproRegion\Services;
+
+use App\Apps\CmsproRegion\Models\Region;
+use RuntimeException;
+use ZipArchive;
+
+/**
+ * 区划数据快照导出服务（生产端）
+ *
+ * 将库中全量行政区划导出为「全量数据快照包」（regions.json + meta.json），
+ * 打包为 cmspro-region-data-{version}.zip 供下载，上传至版本服务器
+ * （Versionsvr「区划数据」服务）发布，各站点区划应用在线同步。
+ *
+ * 导出契约与版本服务器校验规则（Versionsvr RegionDataService::validateRegions）完全对齐：
+ * - regions.json：[{code, name, level, parent_code, status, lon, lat}, ...]，按 level + code 排序
+ * - meta.json：{version, count, stats:{province,city,district,street}, generated_at, format}
+ * - 顶级记录 parent_code 固定为 '0'；status 0/1 均导出；无坐标记录 lon/lat 为 null
+ */
+class RegionSnapshotService
+{
+    /** 快照包内固定文件名（与版本服务器发布包契约一致） */
+    public const REGIONS_FILE = 'regions.json';
+
+    public const META_FILE = 'meta.json';
+
+    /** 单次导出最大记录数（与版本服务器 20 万上限一致） */
+    private const MAX_REGIONS = 200000;
+
+    /** 流式读取分块大小 */
+    private const CHUNK_SIZE = 1000;
+
+    /** 版本号格式：字母/数字/点/下划线/连字符，最长 32 位 */
+    private const VERSION_PATTERN = '/^[A-Za-z0-9._-]{1,32}$/';
+
+    /**
+     * 导出全量数据快照包。
+     *
+     * @param string|null $version 快照版本号，留空自动生成（YYYYMMDD + 3 位序号）
+     * @return array{file_path:string, file_name:string, version:string, count:int, stats:array<string,int>, file_size:int, checksum:string}
+     *
+     * @throws RuntimeException 无省级数据、版本号非法、数据完整性异常或打包失败时
+     */
+    public function export(?string $version = null): array
+    {
+        $version = $this->resolveVersion($version);
+
+        // 前置校验：必须已有省级数据（空库/半途库不可导出）
+        $provinceCount = Region::where('level', Region::LEVEL_PROVINCE)->count();
+        if ($provinceCount === 0) {
+            throw new RuntimeException('库中暂无省级（level=1）区划数据，请先完成数据导入再导出快照包');
+        }
+
+        // id => code 映射，用于 parent_id → parent_code 转换
+        $codeMap = Region::query()->pluck('code', 'id')->all();
+
+        $token = uniqid();
+        $regionsFile = storage_path('app/cmspro-region-snapshot-' . $token . '-regions.json');
+        $metaFile = storage_path('app/cmspro-region-snapshot-' . $token . '-meta.json');
+        $fileName = 'cmspro-region-data-' . $version . '.zip';
+        $zipPath = storage_path('app/' . $fileName);
+
+        $success = false;
+
+        try {
+            $count = $this->writeRegionsJson($regionsFile, $codeMap);
+            $stats = $this->collectStats();
+
+            $this->writeMetaJson($metaFile, $version, $count, $stats);
+            $this->buildZip($zipPath, $regionsFile, $metaFile);
+
+            $success = true;
+
+            return [
+                'file_path' => $zipPath,
+                'file_name' => $fileName,
+                'version' => $version,
+                'count' => $count,
+                'stats' => $stats,
+                'file_size' => (int) filesize($zipPath),
+                'checksum' => (string) hash_file('sha256', $zipPath),
+            ];
+        } finally {
+            // 清理中间文件；失败时连同快照包一并清理（成功后快照包由下载方负责删除）
+            @unlink($regionsFile);
+            @unlink($metaFile);
+            if (! $success && is_file($zipPath)) {
+                @unlink($zipPath);
+            }
+        }
+    }
+
+    /**
+     * 流式写出 regions.json：全量记录按 level + code 排序，父级先于子级。
+     *
+     * @return int 导出记录总数
+     */
+    protected function writeRegionsJson(string $regionsFile, array $codeMap): int
+    {
+        $levelKeys = [
+            Region::LEVEL_PROVINCE => 'province',
+            Region::LEVEL_CITY => 'city',
+            Region::LEVEL_DISTRICT => 'district',
+            Region::LEVEL_STREET => 'street',
+        ];
+
+        $handle = fopen($regionsFile, 'wb');
+        if ($handle === false) {
+            throw new RuntimeException('无法创建导出临时文件');
+        }
+
+        $count = 0;
+
+        try {
+            fwrite($handle, '[');
+
+            Region::query()
+                ->orderBy('level')
+                ->orderBy('code')
+                ->chunk(self::CHUNK_SIZE, function ($regions) use ($handle, $codeMap, $levelKeys, &$count): bool {
+                    foreach ($regions as $region) {
+                        // 数据完整性防御：level 必须为 1-4
+                        if (! isset($levelKeys[$region->level])) {
+                            throw new RuntimeException('区划 ' . $region->code . ' 的 level 非法：' . $region->level . '，请先修复数据');
+                        }
+
+                        // parent_id → parent_code：顶级为 '0'，子级为父记录 code
+                        $parentId = (int) $region->parent_id;
+                        if ($parentId === 0) {
+                            $parentCode = '0';
+                        } elseif (isset($codeMap[$parentId])) {
+                            $parentCode = (string) $codeMap[$parentId];
+                        } else {
+                            throw new RuntimeException('区划 ' . $region->code . ' 引用了不存在的上级记录（parent_id=' . $region->parent_id . '），请先修复数据');
+                        }
+
+                        $row = [
+                            'code' => (string) $region->code,
+                            'name' => (string) $region->name,
+                            'level' => (int) $region->level,
+                            'parent_code' => $parentCode,
+                            'status' => (int) $region->status === 0 ? 0 : 1,
+                            'lon' => $region->lon,
+                            'lat' => $region->lat,
+                        ];
+
+                        fwrite($handle, ($count > 0 ? ',' : '') . json_encode($row, JSON_UNESCAPED_UNICODE));
+                        $count++;
+
+                        if ($count > self::MAX_REGIONS) {
+                            throw new RuntimeException('导出记录数超过上限 ' . self::MAX_REGIONS);
+                        }
+                    }
+
+                    return true;
+                });
+
+            fwrite($handle, ']');
+        } finally {
+            fclose($handle);
+        }
+
+        if ($count === 0) {
+            throw new RuntimeException('未导出任何区划记录');
+        }
+
+        return $count;
+    }
+
+    /**
+     * 统计四级数量。
+     *
+     * @return array<string,int>
+     */
+    protected function collectStats(): array
+    {
+        $stats = Region::query()
+            ->select('level', \DB::raw('count(*) as count'))
+            ->groupBy('level')
+            ->pluck('count', 'level')
+            ->all();
+
+        return [
+            'province' => (int) ($stats[Region::LEVEL_PROVINCE] ?? 0),
+            'city' => (int) ($stats[Region::LEVEL_CITY] ?? 0),
+            'district' => (int) ($stats[Region::LEVEL_DISTRICT] ?? 0),
+            'street' => (int) ($stats[Region::LEVEL_STREET] ?? 0),
+        ];
+    }
+
+    /**
+     * 写出 meta.json（版本与统计，日期时间统一 Y-m-d H:i:s 格式）。
+     *
+     * @param array<string,int> $stats
+     */
+    protected function writeMetaJson(string $metaFile, string $version, int $count, array $stats): void
+    {
+        $meta = json_encode([
+            'version' => $version,
+            'count' => $count,
+            'stats' => $stats,
+            'generated_at' => date('Y-m-d H:i:s'),
+            'format' => 'code,name,level,parent_code,status,lon,lat',
+        ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+
+        if ($meta === false || file_put_contents($metaFile, $meta) === false) {
+            throw new RuntimeException('meta.json 写入失败');
+        }
+    }
+
+    /**
+     * 打包快照 ZIP（regions.json + meta.json，与版本服务器发布包同构）。
+     */
+    protected function buildZip(string $zipPath, string $regionsFile, string $metaFile): void
+    {
+        $zip = new ZipArchive();
+        if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+            throw new RuntimeException('创建快照包失败');
+        }
+
+        $zip->addFile($regionsFile, self::REGIONS_FILE);
+        $zip->addFile($metaFile, self::META_FILE);
+        $zip->close();
+
+        if (! is_file($zipPath)) {
+            throw new RuntimeException('快照包写入失败');
+        }
+    }
+
+    /**
+     * 解析版本号：显式传入则校验格式，留空自动生成（YYYYMMDD + 3 位序号）。
+     *
+     * 序号固定为 001：导出端无发布记录表，无法推算当日序号，
+     * 与已有版本冲突时可在导出时自定义版本号。
+     */
+    protected function resolveVersion(?string $version): string
+    {
+        if ($version === null || trim($version) === '') {
+            return date('Ymd') . '001';
+        }
+
+        $version = trim($version);
+        if (preg_match(self::VERSION_PATTERN, $version) !== 1) {
+            throw new RuntimeException('版本号格式非法：仅允许字母、数字、点、下划线、连字符，最长 32 位');
+        }
+
+        return $version;
+    }
+}

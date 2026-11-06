@@ -2,7 +2,7 @@
     "id": "cmspro.region",
     "name": "中国行政区划",
     "description": "中国行政区划数据服务，支持省、市、区县三级联动及街道四级可选，提供API供其他应用调用",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "author": "CmsPro",
     "icon": "fa fa-map-marker",
     "require": {
@@ -47,6 +47,10 @@
         {
             "code": "cmspro.region.import",
             "name": "数据导入"
+        },
+        {
+            "code": "cmspro.region.export",
+            "name": "数据导出"
         }
     ],
     "runtime_files": [

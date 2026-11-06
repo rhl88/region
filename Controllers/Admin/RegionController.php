@@ -4,6 +4,7 @@ namespace App\Apps\CmsproRegion\Controllers\Admin;
 
 use App\Apps\CmsproRegion\Models\Region;
 use App\Apps\CmsproRegion\Services\RegionService;
+use App\Apps\CmsproRegion\Services\RegionSnapshotService;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -12,9 +13,12 @@ class RegionController extends Controller
 {
     protected RegionService $regionService;
 
-    public function __construct(RegionService $regionService)
+    protected RegionSnapshotService $regionSnapshotService;
+
+    public function __construct(RegionService $regionService, RegionSnapshotService $regionSnapshotService)
     {
         $this->regionService = $regionService;
+        $this->regionSnapshotService = $regionSnapshotService;
     }
 
     /**
@@ -392,6 +396,32 @@ class RegionController extends Controller
             'code' => 0,
             'message' => '闭包表重建完成',
         ]);
+    }
+
+    // ========== 快照导出方法 ==========
+
+    /**
+     * 导出全量数据快照包（生产端）
+     *
+     * 从库导出全量区划为 regions.json + meta.json 打 ZIP 下载，
+     * 供上传版本服务器（Versionsvr「区划数据」服务）发布。
+     * 失败返回 JSON（code=1），成功返回 ZIP 下载流（下载后自动清理临时包）。
+     */
+    public function exportSnapshot(Request $request)
+    {
+        set_time_limit(300);
+
+        try {
+            $snapshot = $this->regionSnapshotService->export($request->query('version'));
+        } catch (\RuntimeException $e) {
+            return response()->json([
+                'code' => 1,
+                'message' => $e->getMessage(),
+            ]);
+        }
+
+        return response()->download($snapshot['file_path'], $snapshot['file_name'])
+            ->deleteFileAfterSend(true);
     }
 
     // ========== 民政部API导入方法 ==========

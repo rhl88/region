@@ -1,7 +1,7 @@
 # CmsPro-中国行政区划-特性清单
 
-> 版本：1.5.0 | 更新日期：2026-09-13
-> 应用版本：1.0.1 | 应用 ID：cmspro.region
+> 版本：1.6.0 | 更新日期：2026-11-06
+> 应用版本：1.2.0 | 应用 ID：cmspro.region
 
 ---
 
@@ -15,7 +15,7 @@
 | 服务提供者 | 注册路由/视图/配置 + 单例绑定 + 钩子注册 | `ServiceProvider.php` |
 | 安装卸载 | 迁移 + 后台手动导入（避免超时） | `Install.php` |
 | 配置 | `Config/region.php`（缓存时间/前缀/默认层级） | `Config/region.php` |
-| 权限 | 2 项权限码 | `manifest.json` `permissions` |
+| 权限 | 3 项权限码 | `manifest.json` `permissions` |
 | 菜单 | 后台 2 个子菜单 | `manifest.json` `menus` |
 | 数据源 | 中国国家地名信息库（民政部 API）；坐标在线更新数据源为阿里 DataV GeoJSON | `Services/RegionService.php` + `Data/` |
 
@@ -24,7 +24,7 @@
 | 终端 | 入口 | 说明 |
 |------|------|------|
 | 后台管理 | `/admin/cmspro/region` | 数据管理页 |
-| 后台 API | `/api/admin/cmspro/region` | 区划数据查询/导入/清缓存/街道/地理位置/GeoJSON 坐标在线更新等 |
+| 后台 API | `/api/admin/cmspro/region` | 区划数据查询/导入/清缓存/街道/地理位置/GeoJSON 坐标在线更新/快照导出等 |
 
 > 本应用为基础设施类应用，主要面向其他应用提供数据服务，无前台用户端/用户端菜单。
 
@@ -67,6 +67,7 @@
 |----------|----------|------|
 | `cmspro.region.manage` | 区划管理 | 数据管理基础权限 |
 | `cmspro.region.import` | 数据导入 | 数据导入权限 |
+| `cmspro.region.export` | 数据导出 | 导出全量数据快照包权限 |
 
 ## 八、安装卸载升级
 
@@ -103,3 +104,4 @@
 | 1.3.0 | 2026-09-13 | 开发团队 | 修复港澳台数据问题：①normalizeCode 非数字编码防护（杜绝民政部 API 返回"资料暂缺"被截断入库成 code='资料' 脏数据，6 处调用方同步加空串跳过）；②新增「补全港澳台」一键修复（修正台湾省级脏编码为 710000，阿里 DataV 源补全香港 18 区/澳门 8 区级节点及坐标，重建闭包表并清缓存） |
 | 1.4.0 | 2026-09-13 | 开发团队 | 官方数据包导出：从开发库全量导出为应用官方数据——list.json 重建为树形三级格式并首次包含港澳台（34 省/333 市/2872 区县），地理位置编码.xlsx 重建为全量坐标快照（3193 行，含省市/港澳台省级坐标）；Data/code/ 街道缓存 2837 文件与库完全一致校验通过。新装应用可直接按省导入官方数据 |
 | 1.5.0 | 2026-09-13 | 开发团队 | 新增「一键数据更新」：后台数据管理页单按钮串联四阶段在线更新流程（① 三级区划：民政部 API 逐省分步 → ② 港澳台补全：阿里 DataV，失败不中止 → ③ 街道数据：逐区县民政部 API（本地缓存优先），失败区县自动追加一轮重试 → ④ 最新坐标：阿里 DataV GeoJSON 逐省），统一进度条按阶段分段映射（0~5%/5~30%/30~85%/85~99%），执行期间按钮互斥；官方数据包（Data/ 目录）作为新装基线集合数据 |
+| 1.6.0 | 2026-11-06 | 开发团队 | 新增「导出快照包」：`RegionSnapshotService` + 「导出快照包」按钮 + `GET /api/admin/cmspro/region/export-snapshot` 接口，将库中全量区划导出为标准化 ZIP 快照包（regions.json + meta.json，`cmspro-region-data-{版本号}.zip`），供上传版本服务器（Versionsvr「区划数据」服务）发布分发，使区划数据更新与区划应用发版解耦；导出契约与版本服务器校验规则完全对齐（level+code 排序、parent_id→parent_code 转换、顶级 parent_code='0'、status 0/1 全量导出、无坐标 lon/lat=null、meta.json 含 version/count/stats/generated_at/format）；新增权限 `cmspro.region.export`（对应应用 v1.2.0） |

@@ -3,6 +3,9 @@
 use App\Apps\CmsproRegion\Controllers\Admin\RegionController;
 use Illuminate\Support\Facades\Route;
 
+// 快照导出（生产端：全量导出供上传版本服务器发布）
+Route::get('/export-snapshot', [RegionController::class, 'exportSnapshot']);
+
 Route::get('/provinces', [RegionController::class, 'provinces']);
 Route::get('/children', [RegionController::class, 'children']);
 Route::get('/tree', [RegionController::class, 'tree']);

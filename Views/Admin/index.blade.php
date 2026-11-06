@@ -82,6 +82,7 @@
                     </div>
                 </div>
                 <button class="layui-btn layui-btn-warm" id="clearCacheBtn"><i class="fa fa-refresh"></i> 清除缓存</button>
+                <button class="layui-btn layui-btn-primary" id="exportSnapshotBtn" title="导出全量数据快照包，供上传版本服务器发布"><i class="fa fa-download"></i> 导出快照包</button>
                 <div class="layui-inline" style="margin-left:20px;">
                     <label class="layui-form-label" style="width:auto;">层级</label>
                     <div class="layui-input-inline layui-form" style="width:120px;margin-top: unset;">
@@ -969,6 +970,48 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
             } else {
                 layer.msg(res.message || '操作失败', {icon: 2});
             }
+        });
+    });
+
+    // 导出全量数据快照包（下载 ZIP：regions.json + meta.json，供上传版本服务器「区划数据」服务发布）
+    $('#exportSnapshotBtn').on('click', function(){
+        layer.prompt({title: '导出全量数据快照包<br><span style="font-size:12px;color:#999;">版本号留空则自动生成（YYYYMMDD001）</span>'}, function(value, index){
+            layer.close(index);
+            var btn = $('#exportSnapshotBtn');
+            btn.addClass('layui-btn-disabled').prop('disabled', true);
+            var url = '/api/admin/cmspro/region/export-snapshot';
+            var version = (value || '').trim();
+            if(version){
+                url += '?version=' + encodeURIComponent(version);
+            }
+            layer.msg('正在导出快照包...', {icon: 0, time: 3000});
+            fetch(url).then(function(res){
+                var contentType = res.headers.get('content-type') || '';
+                if(contentType.indexOf('application/json') !== -1){
+                    // 服务端校验失败：返回 JSON 错误信息
+                    return res.json().then(function(j){
+                        layer.msg(j.message || '导出失败', {icon: 2});
+                    });
+                }
+                // 成功：ZIP 下载流
+                var disposition = res.headers.get('content-disposition') || '';
+                var match = disposition.match(/filename=([^;]+)/);
+                var fileName = match ? match[1] : 'cmspro-region-data.zip';
+                return res.blob().then(function(blob){
+                    var a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = fileName;
+                    document.body.appendChild(a);
+                    a.click();
+                    URL.revokeObjectURL(a.href);
+                    a.remove();
+                    layer.msg('快照包已导出，请前往版本服务器「区划数据」上传发布', {icon: 1, time: 5000});
+                });
+            }).catch(function(){
+                layer.msg('导出失败，请重试', {icon: 2});
+            }).finally(function(){
+                btn.removeClass('layui-btn-disabled').prop('disabled', false);
+            });
         });
     });
 
