@@ -3,6 +3,7 @@
 namespace App\Apps\CmsproRegion\Controllers\Admin;
 
 use App\Apps\CmsproRegion\Models\Region;
+use App\Apps\CmsproRegion\Services\RegionDataSyncService;
 use App\Apps\CmsproRegion\Services\RegionService;
 use App\Apps\CmsproRegion\Services\RegionSnapshotService;
 use App\Http\Controllers\Controller;
@@ -15,10 +16,16 @@ class RegionController extends Controller
 
     protected RegionSnapshotService $regionSnapshotService;
 
-    public function __construct(RegionService $regionService, RegionSnapshotService $regionSnapshotService)
-    {
+    protected RegionDataSyncService $regionDataSyncService;
+
+    public function __construct(
+        RegionService $regionService,
+        RegionSnapshotService $regionSnapshotService,
+        RegionDataSyncService $regionDataSyncService
+    ) {
         $this->regionService = $regionService;
         $this->regionSnapshotService = $regionSnapshotService;
+        $this->regionDataSyncService = $regionDataSyncService;
     }
 
     /**
@@ -422,6 +429,50 @@ class RegionController extends Controller
 
         return response()->download($snapshot['file_path'], $snapshot['file_name'])
             ->deleteFileAfterSend(true);
+    }
+
+    // ========== 在线同步官方数据方法 ==========
+
+    /**
+     * 检查远端官方数据更新（消费端）
+     *
+     * 查询版本服务器「区划数据」服务最新已发布版本，返回远端版本、统计与本地版本对比结果。
+     */
+    public function syncCheckUpdate(): JsonResponse
+    {
+        $info = $this->regionDataSyncService->checkUpdate();
+
+        return response()->json([
+            'code' => 0,
+            'message' => 'success',
+            'data' => $info,
+        ]);
+    }
+
+    /**
+     * 在线同步官方数据（消费端：全量替换落库）
+     *
+     * 下载 → SHA-256 校验 → 解包 → 契约校验 → 单事务全删重插 → 闭包表重建 → 清缓存 → 记版本。
+     * 失败整体回滚，本地数据零影响。
+     */
+    public function syncRegionData(Request $request): JsonResponse
+    {
+        set_time_limit(600);
+
+        try {
+            $result = $this->regionDataSyncService->sync($request->input('version'));
+        } catch (\RuntimeException $e) {
+            return response()->json([
+                'code' => 1,
+                'message' => $e->getMessage(),
+            ]);
+        }
+
+        return response()->json([
+            'code' => 0,
+            'message' => $result['message'] ?? '同步完成',
+            'data' => $result,
+        ]);
     }
 
     // ========== 民政部API导入方法 ==========

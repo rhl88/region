@@ -1,6 +1,6 @@
 # CmsPro 中国行政区划应用扩展指南
 
-> 版本：1.6.0 | 更新日期：2026-11-06
+> 版本：1.7.0 | 更新日期：2026-11-06
 > 适用系统：CmsPro v5.0.0+
 > 应用ID：`cmspro.region`
 
@@ -20,6 +20,7 @@
 - **数据管理**：后台提供数据导入/更新、街道分步导入、缓存清除、级联预览、数据对比更新等功能
 - **地理位置数据**：支持导入城市和区县的经纬度信息，便于地图定位和距离计算
 - **快照导出**：将库中全量区划导出为标准化 ZIP 快照包（regions.json + meta.json），供上传版本服务器（Versionsvr「区划数据」服务）发布分发，使区划数据更新与本应用发版解耦
+- **在线同步官方数据**：从版本服务器在线同步官方区划数据（全量替换落库：单事务全删重插 + 闭包表重建），站点数据初始化从约 1 小时降至 1 分钟内，任一步失败整体回滚零影响
 
 ### 数据源
 
@@ -702,6 +703,56 @@ $snapshot = $snapshotService->export('20261106001');
 
 **导出规则**：库中须已有省级（level=1）数据；单次上限 20 万条（与版本服务器一致）；版本号仅允许字母/数字/点/下划线/连字符（≤32 位）；导出流式分块（1000 条/块）避免大库内存溢出；调用方负责下载后删除快照包文件。
 
+### 4.18 RegionDataSyncService 在线同步官方数据服务
+
+独立于 `RegionService` 的在线同步服务（`Services/RegionDataSyncService.php`，消费端），从版本服务器（Versionsvr「区划数据」服务）在线同步官方区划数据，**全量替换**本地库——站点数据初始化/更新从「一键导入」（约 1 小时）降至 **1 分钟内**。
+
+**后台入口**：数据管理页「在线同步官方数据」按钮，交互为「检查更新 → 弹窗确认 → 同步」三步（`GET /api/admin/cmspro/region/sync-check-update` + `POST /api/admin/cmspro/region/sync-region-data`，`version` 参数可指定历史版本回退）。
+
+```php
+use App\Apps\CmsproRegion\Services\RegionDataSyncService;
+
+$syncService = app(RegionDataSyncService::class);
+
+// 1. 检查远端最新版本（不落库）
+$info = $syncService->checkUpdate();
+// [
+//     'available' => true,            // 版本服务器可用且有已发布版本
+//     'version' => '20261106001',     // 远端最新版本
+//     'region_count' => 47362,        // 远端记录总数
+//     'stats' => [...],               // 四级统计
+//     'local_version' => '',          // 本地已同步版本（空=从未同步）
+//     'need_update' => true,          // 是否需要更新
+//     ...
+// ]
+
+// 2. 在线同步（全量替换落库），null 同步最新版本，传版本号回退历史版本
+$result = $syncService->sync(null);
+// [
+//     'synced' => true,
+//     'version' => '20261106001',
+//     'count' => 47362,               // 同步记录数
+//     'stats' => [...],
+//     'duration' => 5.84,             // 耗时（秒）
+// ]
+
+// 3. 本地已同步版本号（读配置项，空字符串表示从未同步）
+$version = $syncService->localVersion();
+```
+
+**同步链路**（五重安全网，任一步失败本地数据零影响）：
+
+| 步骤 | 说明 |
+|------|------|
+| ① 检查更新 | `GET {apps.market.api_url}/api/versionsvr/region-data/latest`；本地已是最新且未指定版本时跳过下载 |
+| ② 下载校验 | 下载 `region-data/download/{version}`，SHA-256 与版本服务器声明值比对，不符拒绝 |
+| ③ 解包 | 防 Zip Slip，兼容包内多一层包裹目录，读 regions.json |
+| ④ 契约校验 | 与导出端/版本服务器同一套规则（必填/code 唯一≤9 位/level 1-4/parent 引用闭环/省级必含/上限 20 万），**进事务前执行** |
+| ⑤ 单事务落库 | 全删（DELETE，MySQL 下 TRUNCATE 会隐式提交）→ 按 level 分层 chunk(500) 批量插入（parent_code → parent_id，父级先于子级）→ 闭包表全量重建 → 事务提交 |
+| ⑥ 后处理 | 清缓存（`RegionService::clearCache()`）→ 记版本（配置项 `app_cmspro_region_data_sync_version`，配置组「数据同步设置」随应用安装/升级落库）→ 清理旧包（保留最近 3 个） |
+
+**性能基准**（sqlite 内存库，49334 条四级区划 + 19.3 万条闭包记录）：契约校验 0.73s + 全量替换落库 5.11s ≈ **5.84s**。
+
 ***
 
 ## 五、使用场景示例
@@ -898,6 +949,8 @@ ORDER BY c.depth DESC;
 11. **API调用频率**：街道数据导入时每处理一个区县暂停100ms，避免请求过快导致API限流
 12. **地理位置数据**：经纬度信息仅在城市和区县级别可用，街道级别暂不支持；数据源为本地Excel文件 `Data/地理位置编码.xlsx`，需手动点击「导入地理位置」按钮导入
 13. **快照导出契约稳定性**：导出包内 `regions.json` / `meta.json` 的文件名、字段集与排序规则为版本服务器（Versionsvr「区划数据」服务）与消费端（各站点区划应用在线同步）共同依赖的分发契约，调整任何一项前须同步评估版本服务器校验规则与各站点消费端兼容性，禁止单方面变更
+14. **在线同步为全量替换**：`RegionDataSyncService::sync()` 会全量替换本地区划数据（本地手工修改会被覆盖），仅适用于「以官方数据为准」的场景；需保留本地定制的站点请使用导入链路并自行维护差异
+15. **同步版本配置组依赖**：已同步版本号记录依赖配置组「数据同步设置」（`app_cmspro_region_sync_settings`）落库，该组由框架在应用**安装/升级**时按 manifest `config_groups` 声明创建——旧站点首次使用在线同步前需在后台「应用管理」对本应用执行一次升级，否则版本号记录不生效（同步本身不受影响）
 
 ***
 
@@ -912,3 +965,4 @@ ORDER BY c.depth DESC;
 | 1.4.0 | 2026-08-12 | 开发团队 | 文档审查更新：API 接口列表补充按省份导入三级数据（import-by-province）、区划列表（list）、缓存清除（clear-cache）、数据缓存文件下载/清理（download-districts/download-district-data/download-list-json/clear-data-files）、GitHub 数据源检测（check-github）、闭包表重建（rebuild-closure）、民政部全量导入（import-from-mca）、list.json 省份列表（list-json-provinces）等接口 |
 | 1.5.0 | 2026-09-13 | 开发团队 | 新增「一键数据更新」：后台数据管理页单按钮串联四阶段在线更新流程（① 三级区划：民政部 API 逐省分步 → ② 港澳台补全：阿里 DataV，失败不中止 → ③ 街道数据：逐区县民政部 API（本地缓存优先），失败区县自动追加一轮重试 → ④ 最新坐标：阿里 DataV GeoJSON 逐省），统一进度条按阶段分段映射（0~5%/5~30%/30~85%/85~99%），执行期间按钮互斥；官方数据包（Data/ 目录）作为新装基线集合数据 |
 | 1.6.0 | 2026-11-06 | 开发团队 | 新增 `RegionSnapshotService` 快照导出服务（4.17 节）与「导出快照包」后台按钮：将库中全量区划导出为标准化 ZIP 快照包（regions.json + meta.json），供上传版本服务器（Versionsvr「区划数据」服务）发布分发；导出契约与版本服务器校验规则完全对齐（level+code 排序、parent_id→parent_code 转换、顶级 parent_code='0'、status 0/1 全量、无坐标 null、meta 含 version/count/stats/generated_at/format）；新增权限 `cmspro.region.export` |
+| 1.7.0 | 2026-11-06 | 开发团队 | 新增 `RegionDataSyncService` 在线同步官方数据服务（4.18 节，消费端）与「在线同步官方数据」后台按钮：从版本服务器在线同步官方区划数据，检查更新 → 下载 SHA-256 校验 → 解包（防 Zip Slip）→ 契约校验 → 单事务全量替换落库（全删 → 按 level 分层 chunk 批量插入 → 闭包表重建）→ 清缓存 → 记版本；五重安全网（校验和/前置契约/事务回滚/版本回退/重复跳过），任一步失败本地数据零影响；新增配置组「数据同步设置」；站点数据初始化从约 1 小时降至 1 分钟内（49334 条实测 5.84s） |

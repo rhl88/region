@@ -1,7 +1,7 @@
 # CmsPro-中国行政区划-特性清单
 
-> 版本：1.6.0 | 更新日期：2026-11-06
-> 应用版本：1.2.0 | 应用 ID：cmspro.region
+> 版本：1.7.0 | 更新日期：2026-11-06
+> 应用版本：1.3.0 | 应用 ID：cmspro.region
 
 ---
 
@@ -24,7 +24,7 @@
 | 终端 | 入口 | 说明 |
 |------|------|------|
 | 后台管理 | `/admin/cmspro/region` | 数据管理页 |
-| 后台 API | `/api/admin/cmspro/region` | 区划数据查询/导入/清缓存/街道/地理位置/GeoJSON 坐标在线更新/快照导出等 |
+| 后台 API | `/api/admin/cmspro/region` | 区划数据查询/导入/清缓存/街道/地理位置/GeoJSON 坐标在线更新/快照导出/在线同步官方数据等 |
 
 > 本应用为基础设施类应用，主要面向其他应用提供数据服务，无前台用户端/用户端菜单。
 
@@ -105,3 +105,4 @@
 | 1.4.0 | 2026-09-13 | 开发团队 | 官方数据包导出：从开发库全量导出为应用官方数据——list.json 重建为树形三级格式并首次包含港澳台（34 省/333 市/2872 区县），地理位置编码.xlsx 重建为全量坐标快照（3193 行，含省市/港澳台省级坐标）；Data/code/ 街道缓存 2837 文件与库完全一致校验通过。新装应用可直接按省导入官方数据 |
 | 1.5.0 | 2026-09-13 | 开发团队 | 新增「一键数据更新」：后台数据管理页单按钮串联四阶段在线更新流程（① 三级区划：民政部 API 逐省分步 → ② 港澳台补全：阿里 DataV，失败不中止 → ③ 街道数据：逐区县民政部 API（本地缓存优先），失败区县自动追加一轮重试 → ④ 最新坐标：阿里 DataV GeoJSON 逐省），统一进度条按阶段分段映射（0~5%/5~30%/30~85%/85~99%），执行期间按钮互斥；官方数据包（Data/ 目录）作为新装基线集合数据 |
 | 1.6.0 | 2026-11-06 | 开发团队 | 新增「导出快照包」：`RegionSnapshotService` + 「导出快照包」按钮 + `GET /api/admin/cmspro/region/export-snapshot` 接口，将库中全量区划导出为标准化 ZIP 快照包（regions.json + meta.json，`cmspro-region-data-{版本号}.zip`），供上传版本服务器（Versionsvr「区划数据」服务）发布分发，使区划数据更新与区划应用发版解耦；导出契约与版本服务器校验规则完全对齐（level+code 排序、parent_id→parent_code 转换、顶级 parent_code='0'、status 0/1 全量导出、无坐标 lon/lat=null、meta.json 含 version/count/stats/generated_at/format）；新增权限 `cmspro.region.export`（对应应用 v1.2.0） |
+| 1.7.0 | 2026-11-06 | 开发团队 | 新增「在线同步官方数据」（消费端）：`RegionDataSyncService` + 「在线同步官方数据」按钮 + `GET sync-check-update` / `POST sync-region-data` 接口；同步链路：检查更新（版本服务器 `region-data/latest`）→ 下载 SHA-256 校验（`region-data/download/{version}`）→ 解包（防 Zip Slip）→ 契约校验 → 单事务全量替换落库（全删 → 按 level 分层 chunk(500) 批量插入、parent_code→parent_id、闭包表重建）→ 清缓存 → 记版本（配置组「数据同步设置」+ 配置项 `app_cmspro_region_data_sync_version`）；五重安全网（校验和/前置契约/事务回滚/版本回退/重复跳过）；站点初始化从约 1 小时降至 1 分钟内（49334 条实测校验+落库 5.84s）（对应应用 v1.3.0） |

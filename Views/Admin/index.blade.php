@@ -83,6 +83,7 @@
                 </div>
                 <button class="layui-btn layui-btn-warm" id="clearCacheBtn"><i class="fa fa-refresh"></i> 清除缓存</button>
                 <button class="layui-btn layui-btn-primary" id="exportSnapshotBtn" title="导出全量数据快照包，供上传版本服务器发布"><i class="fa fa-download"></i> 导出快照包</button>
+                <button class="layui-btn layui-btn-normal" id="syncRegionDataBtn" title="从版本服务器在线同步官方区划数据（全量替换本地数据）"><i class="fa fa-cloud-download"></i> 在线同步官方数据</button>
                 <div class="layui-inline" style="margin-left:20px;">
                     <label class="layui-form-label" style="width:auto;">层级</label>
                     <div class="layui-input-inline layui-form" style="width:120px;margin-top: unset;">
@@ -1012,6 +1013,61 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
             }).finally(function(){
                 btn.removeClass('layui-btn-disabled').prop('disabled', false);
             });
+        });
+    });
+
+    // 在线同步官方数据（消费端：检查更新 → 确认 → 全量替换落库，1 分钟内完成）
+    $('#syncRegionDataBtn').on('click', function(){
+        var btn = $(this);
+        btn.addClass('layui-btn-disabled').prop('disabled', true);
+        var loadingIndex = layer.msg('正在检查官方数据更新...', {icon: 0, time: 30000});
+        $.get('/api/admin/cmspro/region/sync-check-update', function(res){
+            layer.close(loadingIndex);
+            if(res.code !== 0){
+                layer.msg(res.message || '检查更新失败', {icon: 2});
+                return;
+            }
+            var info = res.data || {};
+            if(!info.available){
+                layer.msg(info.message || '版本服务暂不可用', {icon: 2});
+                return;
+            }
+            if(!info.need_update){
+                layer.msg('本地已是最新版本 ' + (info.local_version || '-') + '，无需同步', {icon: 1});
+                return;
+            }
+            var stats = info.stats || {};
+            var html = '<div style="text-align:left;line-height:2;">' +
+                '<b>发现官方区划数据新版本</b><br>' +
+                '最新版本：<b>' + info.version + '</b>（本地：' + (info.local_version || '未同步') + '）<br>' +
+                '发布时间：' + (info.release_time || '-') + '<br>' +
+                '记录总数：<b>' + info.region_count + '</b> 条（省 ' + (stats.province || 0) + ' / 市 ' + (stats.city || 0) + ' / 区县 ' + (stats.district || 0) + ' / 街道 ' + (stats.street || 0) + '）<br>' +
+                '更新说明：' + (info.changelog || '无') + '<br><br>' +
+                '<span style="color:#e6a23c;">⚠ 同步将<b style="color:#e6a23c;">全量替换</b>本地区划数据（本地手工修改会被覆盖），完成后自动重建层级关系与缓存，预计 1 分钟内完成。确定同步吗？</span>' +
+                '</div>';
+            layer.confirm(html, {title: '在线同步官方数据', btn: ['开始同步', '取消'], area: '540px'}, function(index){
+                layer.close(index);
+                var syncingIndex = layer.msg('正在同步官方数据，请勿关闭或刷新页面...', {icon: 0, time: 600000});
+                $.post('/api/admin/cmspro/region/sync-region-data', {version: null}, function(r){
+                    layer.close(syncingIndex);
+                    if(r.code === 0 && r.data && r.data.synced){
+                        layer.msg('同步完成：版本 ' + r.data.version + '，共 ' + r.data.count + ' 条，耗时 ' + r.data.duration + ' 秒', {icon: 1, time: 8000});
+                        setTimeout(function(){ location.reload(); }, 2500);
+                    } else if(r.code === 0){
+                        layer.msg(r.message || '无需同步', {icon: 1});
+                    } else {
+                        layer.msg(r.message || '同步失败', {icon: 2, time: 8000});
+                    }
+                }).fail(function(){
+                    layer.close(syncingIndex);
+                    layer.msg('同步请求失败，请重试', {icon: 2});
+                });
+            });
+        }).fail(function(){
+            layer.close(loadingIndex);
+            layer.msg('检查更新失败，请重试', {icon: 2});
+        }).always(function(){
+            btn.removeClass('layui-btn-disabled').prop('disabled', false);
         });
     });
 

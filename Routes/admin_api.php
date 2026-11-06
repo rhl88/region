@@ -6,6 +6,10 @@ use Illuminate\Support\Facades\Route;
 // 快照导出（生产端：全量导出供上传版本服务器发布）
 Route::get('/export-snapshot', [RegionController::class, 'exportSnapshot']);
 
+// 在线同步官方数据（消费端：从版本服务器同步区划数据，全量替换落库）
+Route::get('/sync-check-update', [RegionController::class, 'syncCheckUpdate']);
+Route::post('/sync-region-data', [RegionController::class, 'syncRegionData']);
+
 Route::get('/provinces', [RegionController::class, 'provinces']);
 Route::get('/children', [RegionController::class, 'children']);
 Route::get('/tree', [RegionController::class, 'tree']);
