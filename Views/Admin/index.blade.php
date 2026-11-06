@@ -30,6 +30,18 @@
         .one-key-menu-item.layui-btn-disabled{color:#ccc;cursor:not-allowed;background:#fff;}
         /* 一键导入菜单项悬停用蓝色（匹配主按钮色），覆盖默认绿色 */
         .one-key-import-menu .one-key-menu-item:hover{color:#1e9fff;}
+        /* 旧版数据更新：一级「点击」展开面板，收纳原有一键导入/一键数据更新/清除缓存/更新数据 */
+        .legacy-wrap{display:inline-block;position:relative;vertical-align:middle;}
+        .legacy-menu{display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:9998;min-width:210px;background:#fff;border:1px solid #e6e6e6;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.15);padding:8px;}
+        .legacy-menu.show{display:block;}
+        .legacy-menu .legacy-item{display:block;width:100%;margin:0 0 6px;text-align:left;box-sizing:border-box;}
+        .legacy-menu .legacy-item:last-child{margin-bottom:0;}
+        .legacy-menu .legacy-sep{height:1px;background:#f0f0f0;margin:6px 0;}
+        /* 面板内二级悬停子菜单改为右侧弹出；margin-left/padding-left 桥接消除悬停间隙 */
+        .legacy-menu .one-key-wrap{display:block;width:100%;}
+        .legacy-menu .one-key-menu{top:-6px;left:100%;margin-left:-8px;padding-left:8px;padding-top:5px;padding-bottom:5px;}
+        /* 「在线同步官方数据」右上角推荐徽标 */
+        .recommend-badge{position:absolute;top:-8px;right:-6px;z-index:2;padding:1px 6px;font-size:11px;line-height:16px;color:#fff;background:#ff5722;border-radius:8px;font-style:normal;white-space:nowrap;}
     </style>
 </head>
 <body>
@@ -60,30 +72,40 @@
     <div class="layui-card" style="margin-top:15px;">
         <div class="layui-card-body">
             <div style="margin-bottom:15px;">
-                {{-- 主按钮：单击执行一键导入（本地链路）/一键数据更新（在线链路）；悬停弹出下拉菜单显示各阶段独立导入入口 --}}
-                <div class="one-key-wrap">
-                    <button class="layui-btn" id="oneKeyImportBtn" style="background:#1e9fff;"><i class="fa fa-database"></i> 一键导入</button>
-                    <div class="one-key-menu one-key-import-menu">
-                        <div class="one-key-menu-title">本地数据导入（手动执行单项）</div>
-                        <div class="one-key-menu-item" data-btn="importBtn"><i class="fa fa-download"></i> 导入三级数据</div>
-                        <div class="one-key-menu-item" data-btn="importStreetBtn"><i class="fa fa-building"></i> 导入街道数据</div>
-                        <div class="one-key-menu-item" data-btn="importGeoBtn"><i class="fa fa-map-marker"></i> 导入地理位置</div>
+                {{-- 旧版数据更新：点击展开面板，收纳原「一键导入 / 一键数据更新 / 清除缓存 / 更新数据」；前两项保留悬停二级单项入口 --}}
+                <div class="legacy-wrap">
+                    <button class="layui-btn layui-btn-primary" id="legacyUpdateBtn"><i class="fa fa-history"></i> 旧版数据更新 <i class="fa fa-caret-down"></i></button>
+                    <div class="legacy-menu" id="legacyMenu">
+                        <div class="one-key-wrap">
+                            <button class="layui-btn legacy-item" id="oneKeyImportBtn" style="background:#1e9fff;"><i class="fa fa-database"></i> 一键导入</button>
+                            <div class="one-key-menu one-key-import-menu">
+                                <div class="one-key-menu-title">本地数据导入（手动执行单项）</div>
+                                <div class="one-key-menu-item" data-btn="importBtn"><i class="fa fa-download"></i> 导入三级数据</div>
+                                <div class="one-key-menu-item" data-btn="importStreetBtn"><i class="fa fa-building"></i> 导入街道数据</div>
+                                <div class="one-key-menu-item" data-btn="importGeoBtn"><i class="fa fa-map-marker"></i> 导入地理位置</div>
+                            </div>
+                        </div>
+                        <div class="one-key-wrap">
+                            <button class="layui-btn legacy-item" id="oneKeyUpdateBtn" style="background:#16b777;"><i class="fa fa-bolt"></i> 一键数据更新</button>
+                            <div class="one-key-menu">
+                                <div class="one-key-menu-title">数据更新（手动执行单项）</div>
+                                <div class="one-key-menu-item" data-btn="importBtn"><i class="fa fa-download"></i> 导入三级数据</div>
+                                <div class="one-key-menu-item" data-btn="importStreetBtn"><i class="fa fa-building"></i> 导入街道数据</div>
+                                <div class="one-key-menu-item" data-btn="importGeoBtn"><i class="fa fa-map-marker"></i> 导入地理位置</div>
+                                <div class="one-key-menu-item" data-btn="importGeojsonBtn"><i class="fa fa-globe"></i> 更新坐标</div>
+                                <div class="one-key-menu-item" data-btn="importHmtBtn"><i class="fa fa-flag"></i> 补全港澳台</div>
+                            </div>
+                        </div>
+                        <div class="legacy-sep"></div>
+                        <button class="layui-btn layui-btn-warm legacy-item" id="clearCacheBtn"><i class="fa fa-refresh"></i> 清除缓存</button>
+                        <button class="layui-btn layui-btn-primary legacy-item" id="updateDataBtn"><i class="fa fa-cloud-download"></i> 更新数据</button>
                     </div>
                 </div>
-                <div class="one-key-wrap">
-                    <button class="layui-btn" id="oneKeyUpdateBtn" style="background:#16b777;"><i class="fa fa-bolt"></i> 一键数据更新</button>
-                    <div class="one-key-menu">
-                        <div class="one-key-menu-title">数据更新（手动执行单项）</div>
-                        <div class="one-key-menu-item" data-btn="importBtn"><i class="fa fa-download"></i> 导入三级数据</div>
-                        <div class="one-key-menu-item" data-btn="importStreetBtn"><i class="fa fa-building"></i> 导入街道数据</div>
-                        <div class="one-key-menu-item" data-btn="importGeoBtn"><i class="fa fa-map-marker"></i> 导入地理位置</div>
-                        <div class="one-key-menu-item" data-btn="importGeojsonBtn"><i class="fa fa-globe"></i> 更新坐标</div>
-                        <div class="one-key-menu-item" data-btn="importHmtBtn"><i class="fa fa-flag"></i> 补全港澳台</div>
-                    </div>
-                </div>
-                <button class="layui-btn layui-btn-warm" id="clearCacheBtn"><i class="fa fa-refresh"></i> 清除缓存</button>
                 <button class="layui-btn layui-btn-primary" id="exportSnapshotBtn" title="导出全量数据快照包，供上传版本服务器发布"><i class="fa fa-download"></i> 导出快照包</button>
-                <button class="layui-btn layui-btn-normal" id="syncRegionDataBtn" title="从版本服务器在线同步官方区划数据（全量替换本地数据）"><i class="fa fa-cloud-download"></i> 在线同步官方数据</button>
+                <span style="position:relative;display:inline-block;vertical-align:middle;">
+                    <button class="layui-btn layui-btn-normal" id="syncRegionDataBtn" title="从版本服务器在线同步官方区划数据（全量替换本地数据）"><i class="fa fa-cloud-download"></i> 在线同步官方数据</button>
+                    <i class="recommend-badge">推荐</i>
+                </span>
                 <div class="layui-inline" style="margin-left:20px;">
                     <label class="layui-form-label" style="width:auto;">层级</label>
                     <div class="layui-input-inline layui-form" style="width:120px;margin-top: unset;">
@@ -100,7 +122,6 @@
                     <input type="text" id="keywordInput" placeholder="搜索名称或代码" class="layui-input" style="width:200px;">
                 </div>
                 <button class="layui-btn" id="searchBtn"><i class="fa fa-search"></i> 搜索</button>
-                <button class="layui-btn layui-btn-primary" id="updateDataBtn" style="float:right;"><i class="fa fa-cloud-download"></i> 更新数据</button>
             </div>
 
             {{-- 街道导入进度 --}}
@@ -1502,6 +1523,22 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         }
         var fn = oneKeyMenuTriggers[$(this).data('btn')];
         if(fn) fn();
+    });
+
+    // 旧版数据更新：一级按钮「点击」展开/收起面板（面板内前两项保留「悬停」二级子菜单）
+    $('#legacyUpdateBtn').on('click', function(e){
+        e.stopPropagation();
+        $('#legacyMenu').toggleClass('show');
+    });
+    // 点击面板外部关闭面板
+    $(document).on('click', function(e){
+        if(!$(e.target).closest('.legacy-wrap').length){
+            $('#legacyMenu').removeClass('show');
+        }
+    });
+    // 面板内任一按钮 / 二级菜单项被点击后收起面板（各自 click 事件已单独绑定，此处仅负责收起）
+    $('#legacyMenu').on('click', 'button, .one-key-menu-item', function(){
+        $('#legacyMenu').removeClass('show');
     });
 
     // 运行态互斥同步：任一导入任务运行时，禁用两个主按钮 + 下拉菜单；全部空闲时恢复

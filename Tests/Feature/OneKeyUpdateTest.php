@@ -64,6 +64,35 @@ class OneKeyUpdateTest extends RegionTestCase
             ->assertSee('import-geo-data-from-geojson', false);
     }
 
+    /**
+     * 工具栏收纳：旧的四个功能按钮（一键导入 / 一键数据更新 / 清除缓存 / 更新数据）
+     * 收进「旧版数据更新」下拉按钮，点击展开；「在线同步官方数据」加「推荐」标识。
+     * 收纳后各功能的 id / data-btn / 二级悬停子菜单 / 串联 JS 入口均须保留（既有断言不回归）。
+     */
+    public function test_管理页工具栏收纳为旧版数据更新下拉并标识推荐(): void
+    {
+        $this->asAdmin()
+            ->get('/admin/cmspro/region')
+            ->assertOk()
+            // 一级「旧版数据更新」下拉按钮 + 面板
+            ->assertSee('legacyUpdateBtn', false)
+            ->assertSee('旧版数据更新', false)
+            ->assertSee('legacyMenu', false)
+            // 四个功能按钮收纳后仍保留其 id（供禁用互斥与事件绑定）
+            ->assertSee('oneKeyImportBtn', false)
+            ->assertSee('oneKeyUpdateBtn', false)
+            ->assertSee('clearCacheBtn', false)
+            ->assertSee('updateDataBtn', false)
+            // 二级悬停子菜单容器保留（一键导入 / 一键数据更新各自的单项入口）
+            ->assertSee('one-key-import-menu', false)
+            ->assertSee('data-btn="importBtn"', false)
+            ->assertSee('data-btn="importHmtBtn"', false)
+            // 「在线同步官方数据」推荐标识
+            ->assertSee('syncRegionDataBtn', false)
+            ->assertSee('recommend-badge', false)
+            ->assertSee('推荐', false);
+    }
+
     public function test_未登录访问管理页被拦截(): void
     {
         $this->get('/admin/cmspro/region')->assertRedirect();
