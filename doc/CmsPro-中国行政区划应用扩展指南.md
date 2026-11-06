@@ -1,6 +1,6 @@
 # CmsPro 中国行政区划应用扩展指南
 
-> 版本：1.7.0 | 更新日期：2026-11-06
+> 版本：1.7.2 | 更新日期：2026-11-06
 > 适用系统：CmsPro v5.0.0+
 > 应用ID：`cmspro.region`
 
@@ -707,7 +707,7 @@ $snapshot = $snapshotService->export('20261106001');
 
 独立于 `RegionService` 的在线同步服务（`Services/RegionDataSyncService.php`，消费端），从版本服务器（Versionsvr「区划数据」服务）在线同步官方区划数据，**全量替换**本地库——站点数据初始化/更新从「一键导入」（约 1 小时）降至 **1 分钟内**。
 
-**后台入口**：数据管理页「在线同步官方数据」按钮，交互为「检查更新 → 弹窗确认 → 同步」三步（`GET /api/admin/cmspro/region/sync-check-update` + `POST /api/admin/cmspro/region/sync-region-data`，`version` 参数可指定历史版本回退）。
+**后台入口**：数据管理页「在线同步官方数据」按钮，交互为「检查更新 → 弹窗确认 → 同步（实时进度条）」，涉及三个接口：`GET /api/admin/cmspro/region/sync-check-update`（检查更新）+ `POST /api/admin/cmspro/region/sync-region-data`（执行同步，`version` 参数可指定历史版本回退、`progress_token` 参数启用进度上报）+ `GET /api/admin/cmspro/region/sync-progress`（轮询进度，前端 800ms/次）。
 
 ```php
 use App\Apps\CmsproRegion\Services\RegionDataSyncService;
@@ -738,7 +738,14 @@ $result = $syncService->sync(null);
 
 // 3. 本地已同步版本号（读配置项，空字符串表示从未同步）
 $version = $syncService->localVersion();
+
+// 4. 进度上报（可选）：链式设置令牌后 sync 各阶段写缓存，另一请求轮询 getProgress 读取
+$syncService->withProgressToken('sync_xxx')->sync(null);
+$progress = $syncService->getProgress('sync_xxx');
+// ['state' => 'running|done|error|idle', 'percent' => 45, 'stage' => '当前阶段文案', 'message' => '结果信息']
 ```
+
+> 进度机制说明：长任务（`sync-region-data`）与轮询（`sync-progress`）在生产环境跑在不同 PHP-FPM 进程，进度经 **Cache 跨进程共享**（生产 `CACHE_STORE=redis`，测试 `array`）。控制器在长任务执行前调用 `session()->save()` 释放 session 写锁，避免轮询请求被阻塞。令牌为空时不上报（服务层直接调用场景），`getProgress` 对未知令牌返回 `idle` 态。
 
 **同步链路**（五重安全网，任一步失败本地数据零影响）：
 
@@ -749,7 +756,7 @@ $version = $syncService->localVersion();
 | ③ 解包 | 防 Zip Slip，兼容包内多一层包裹目录，读 regions.json |
 | ④ 契约校验 | 与导出端/版本服务器同一套规则（必填/code 唯一≤9 位/level 1-4/parent 引用闭环/省级必含/上限 20 万），**进事务前执行** |
 | ⑤ 单事务落库 | 全删（DELETE，MySQL 下 TRUNCATE 会隐式提交）→ 按 level 分层 chunk(500) 批量插入（parent_code → parent_id，父级先于子级）→ 闭包表全量重建 → 事务提交 |
-| ⑥ 后处理 | 清缓存（`RegionService::clearCache()`）→ 记版本（配置项 `app_cmspro_region_data_sync_version`，配置组「数据同步设置」随应用安装/升级落库）→ 清理旧包（保留最近 3 个） |
+| ⑥ 后处理 | 清缓存（`RegionService::clearCache()`）→ 记版本（配置项 `app_cmspro_region_data_sync_version`；配置组「数据同步设置」由框架在应用安装/升级时落库，**组缺失时 `firstOrCreate` 自愈创建**，确保版本号一定写入）→ 清理旧包（保留最近 3 个） |
 
 **性能基准**（sqlite 内存库，49334 条四级区划 + 19.3 万条闭包记录）：契约校验 0.73s + 全量替换落库 5.11s ≈ **5.84s**。
 
@@ -966,3 +973,4 @@ ORDER BY c.depth DESC;
 | 1.5.0 | 2026-09-13 | 开发团队 | 新增「一键数据更新」：后台数据管理页单按钮串联四阶段在线更新流程（① 三级区划：民政部 API 逐省分步 → ② 港澳台补全：阿里 DataV，失败不中止 → ③ 街道数据：逐区县民政部 API（本地缓存优先），失败区县自动追加一轮重试 → ④ 最新坐标：阿里 DataV GeoJSON 逐省），统一进度条按阶段分段映射（0~5%/5~30%/30~85%/85~99%），执行期间按钮互斥；官方数据包（Data/ 目录）作为新装基线集合数据 |
 | 1.6.0 | 2026-11-06 | 开发团队 | 新增 `RegionSnapshotService` 快照导出服务（4.17 节）与「导出快照包」后台按钮：将库中全量区划导出为标准化 ZIP 快照包（regions.json + meta.json），供上传版本服务器（Versionsvr「区划数据」服务）发布分发；导出契约与版本服务器校验规则完全对齐（level+code 排序、parent_id→parent_code 转换、顶级 parent_code='0'、status 0/1 全量、无坐标 null、meta 含 version/count/stats/generated_at/format）；新增权限 `cmspro.region.export` |
 | 1.7.0 | 2026-11-06 | 开发团队 | 新增 `RegionDataSyncService` 在线同步官方数据服务（4.18 节，消费端）与「在线同步官方数据」后台按钮：从版本服务器在线同步官方区划数据，检查更新 → 下载 SHA-256 校验 → 解包（防 Zip Slip）→ 契约校验 → 单事务全量替换落库（全删 → 按 level 分层 chunk 批量插入 → 闭包表重建）→ 清缓存 → 记版本；五重安全网（校验和/前置契约/事务回滚/版本回退/重复跳过），任一步失败本地数据零影响；新增配置组「数据同步设置」；站点数据初始化从约 1 小时降至 1 分钟内（49334 条实测 5.84s） |
+| 1.7.2 | 2026-11-06 | 开发团队 | 在线同步体验修复（4.18 节，应用版本不变）：① `saveVersion()` 配置组缺失时 `firstOrCreate` 自愈建组，修复已同步但前端仍显示「未同步」；② 新增进度上报机制——`withProgressToken()` 链式设置令牌后 sync 各阶段经 Cache 写进度（生产 redis 跨进程共享），`getProgress()` 供 `GET sync-progress` 轮询，前端实时进度条替代静态提示；控制器长任务前 `session()->save()` 释放 session 锁避免轮询阻塞 |

@@ -1068,9 +1068,43 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                 '</div>';
             layer.confirm(html, {title: '在线同步官方数据', btn: ['开始同步', '取消'], area: '540px'}, function(index){
                 layer.close(index);
-                var syncingIndex = layer.msg('正在同步官方数据，请勿关闭或刷新页面...', {icon: 0, time: 600000});
-                $.post('/api/admin/cmspro/region/sync-region-data', {version: null}, function(r){
-                    layer.close(syncingIndex);
+
+                // 进度令牌：服务端各阶段写入缓存，前端轮询展示实时进度条
+                var progressToken = 'sync_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+                var progressIdx = layer.open({
+                    type: 1,
+                    title: '正在同步官方数据',
+                    area: '480px',
+                    closeBtn: 0,
+                    shadeClose: false,
+                    content: '<div style="padding:24px 28px;">' +
+                        '<div id="syncStageText" style="font-size:13px;color:#666;margin-bottom:14px;min-height:20px;">正在准备...</div>' +
+                        '<div class="layui-progress" lay-showpercent="true" lay-filter="syncProgress" style="height:16px;">' +
+                            '<div class="layui-progress-bar layui-bg-blue" lay-percent="0%"></div>' +
+                        '</div>' +
+                        '<div style="font-size:12px;color:#999;margin-top:16px;line-height:1.7;">' +
+                            '同步将<b style="color:#e6a23c;">全量替换</b>本地区划数据，请勿关闭或刷新页面。</div>' +
+                        '</div>'
+                });
+                element.render('progress');
+
+                // 轮询进度（800ms 一次），直到同步请求返回
+                var pollTimer = setInterval(function(){
+                    $.get('/api/admin/cmspro/region/sync-progress', {progress_token: progressToken}, function(p){
+                        if(p.code === 0 && p.data && p.data.state !== 'idle'){
+                            element.progress('syncProgress', p.data.percent + '%');
+                            $('#syncStageText').text(p.data.stage || p.data.message || '');
+                        }
+                    });
+                }, 800);
+
+                function finishProgress(){
+                    clearInterval(pollTimer);
+                    layer.close(progressIdx);
+                }
+
+                $.post('/api/admin/cmspro/region/sync-region-data', {version: null, progress_token: progressToken}, function(r){
+                    finishProgress();
                     if(r.code === 0 && r.data && r.data.synced){
                         layer.msg('同步完成：版本 ' + r.data.version + '，共 ' + r.data.count + ' 条，耗时 ' + r.data.duration + ' 秒', {icon: 1, time: 8000});
                         setTimeout(function(){ location.reload(); }, 2500);
@@ -1080,7 +1114,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                         layer.msg(r.message || '同步失败', {icon: 2, time: 8000});
                     }
                 }).fail(function(){
-                    layer.close(syncingIndex);
+                    finishProgress();
                     layer.msg('同步请求失败，请重试', {icon: 2});
                 });
             });

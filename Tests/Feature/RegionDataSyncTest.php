@@ -326,4 +326,76 @@ class RegionDataSyncTest extends RegionTestCase
             ->assertSee('sync-check-update', false)
             ->assertSee('sync-region-data', false);
     }
+
+    /**
+     * 问题1回归：未预置配置组（未执行应用升级的旧站点）时，同步后版本号仍须自愈写入，
+     * 否则 localVersion() 恒读空，前端「本地版本」一直显示「未同步」。
+     */
+    public function test_同步_配置组不存在时自愈建组并写入版本号(): void
+    {
+        $this->seedLocalOldData();
+        // 故意不 seedSyncConfig：模拟站点从未对区划应用执行升级，配置组缺失
+
+        $this->assertSame(0, ConfigGroup::where('code', 'app_cmspro_region_sync_settings')->count());
+
+        $package = $this->buildRemotePackage($this->sampleRemoteRegions(), '20261106001');
+        $this->fakeVersionServer($package, '20261106001');
+
+        $this->asAdmin()
+            ->postJson('/api/admin/cmspro/region/sync-region-data')
+            ->assertOk()
+            ->assertJson(['code' => 0]);
+
+        // 配置组被自动创建，版本号落库
+        $this->assertSame(1, ConfigGroup::where('code', 'app_cmspro_region_sync_settings')->count());
+        $this->assertSame(
+            '20261106001',
+            (string) ConfigItem::where('code', 'app_cmspro_region_data_sync_version')->value('value')
+        );
+    }
+
+    /**
+     * 问题2：同步进度接口——未知令牌返回 idle 态（前端轮询起始状态）。
+     */
+    public function test_同步进度接口_未知令牌返回idle(): void
+    {
+        $this->asAdmin()
+            ->getJson('/api/admin/cmspro/region/sync-progress?progress_token=not_exist_token')
+            ->assertOk()
+            ->assertJson(['code' => 0])
+            ->assertJsonPath('data.state', 'idle')
+            ->assertJsonPath('data.percent', 0);
+    }
+
+    /**
+     * 问题2：传入进度令牌同步后，可轮询到终态进度（done/100），前端据此实时渲染进度条。
+     */
+    public function test_同步接口_传入进度令牌后可轮询到进度状态(): void
+    {
+        $this->seedLocalOldData();
+        $this->seedSyncConfig('');
+
+        $package = $this->buildRemotePackage($this->sampleRemoteRegions(), '20261106001');
+        $this->fakeVersionServer($package, '20261106001');
+
+        $token = 'sync_test_' . uniqid();
+
+        $this->asAdmin()
+            ->postJson('/api/admin/cmspro/region/sync-region-data', ['progress_token' => $token])
+            ->assertOk()
+            ->assertJson(['code' => 0]);
+
+        // 同步为同步请求，返回时进度已推进到终态；轮询应读到 done/100
+        $this->asAdmin()
+            ->getJson('/api/admin/cmspro/region/sync-progress?progress_token=' . $token)
+            ->assertOk()
+            ->assertJsonPath('data.state', 'done')
+            ->assertJsonPath('data.percent', 100);
+    }
+
+    public function test_未登录访问进度接口被拦截(): void
+    {
+        $this->getJson('/api/admin/cmspro/region/sync-progress?progress_token=x')
+            ->assertUnauthorized();
+    }
 }

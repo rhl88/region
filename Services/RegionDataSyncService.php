@@ -6,6 +6,7 @@ use App\Apps\CmsproRegion\Models\Region;
 use App\Enums\Status;
 use App\Models\ConfigGroup;
 use App\Models\ConfigItem;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -54,8 +55,64 @@ class RegionDataSyncService
     /** 本地保留最近下载数（与清理策略一致） */
     private const KEEP_PACKS = 3;
 
+    /** 同步进度缓存键前缀（供前端轮询，长任务执行期间实时反馈各阶段） */
+    private const PROGRESS_KEY_PREFIX = 'cmspro_region:sync_progress:';
+
+    /** 同步进度缓存存活秒数（覆盖最长同步耗时，过期自动清理） */
+    private const PROGRESS_TTL = 600;
+
+    /** 当前同步的进度令牌（为空表示不上报进度，如服务层直接调用） */
+    protected ?string $progressToken = null;
+
     public function __construct(protected RegionService $regionService)
     {
+    }
+
+    /**
+     * 设置进度令牌：非空时同步过程各阶段实时写入缓存，供前端轮询展示进度。
+     */
+    public function withProgressToken(?string $token): static
+    {
+        $token = trim((string) $token);
+        $this->progressToken = $token !== '' ? $token : null;
+
+        return $this;
+    }
+
+    /**
+     * 读取同步进度（供轮询接口）。令牌无对应进度时返回 idle 态。
+     *
+     * @return array{state:string,percent:int,stage:string,message:string}
+     */
+    public function getProgress(string $token): array
+    {
+        $token = trim($token);
+        if ($token === '') {
+            return ['state' => 'idle', 'percent' => 0, 'stage' => '', 'message' => ''];
+        }
+
+        $progress = Cache::get(self::PROGRESS_KEY_PREFIX . $token);
+
+        return is_array($progress)
+            ? $progress
+            : ['state' => 'idle', 'percent' => 0, 'stage' => '', 'message' => ''];
+    }
+
+    /**
+     * 上报同步进度到缓存（令牌为空时静默跳过）。
+     */
+    protected function reportProgress(string $state, int $percent, string $stage, string $message = ''): void
+    {
+        if ($this->progressToken === null) {
+            return;
+        }
+
+        Cache::put(self::PROGRESS_KEY_PREFIX . $this->progressToken, [
+            'state' => $state,
+            'percent' => max(0, min(100, $percent)),
+            'stage' => $stage,
+            'message' => $message,
+        ], self::PROGRESS_TTL);
     }
 
     /**
@@ -155,6 +212,8 @@ class RegionDataSyncService
         $zipPath = $packDir . '/cmspro-region-data-' . $version . '.zip';
 
         try {
+            $this->reportProgress('running', 5, '正在连接版本服务器并下载数据包...');
+
             $response = $this->httpClient()->get(
                 $this->apiUrl('/api/versionsvr/region-data/download/' . rawurlencode($version))
             );
@@ -165,20 +224,30 @@ class RegionDataSyncService
 
             File::put($zipPath, $response->body());
 
+            $this->reportProgress('running', 20, '正在校验数据包完整性（SHA-256）...');
+
             if ($expectedChecksum !== '' && hash_file('sha256', $zipPath) !== $expectedChecksum) {
                 throw new RuntimeException('数据包校验失败，可能已损坏或被篡改');
             }
 
+            $this->reportProgress('running', 30, '正在解包并校验数据契约...');
+
             $regions = $this->readRegionsFromZip($zipPath);
             $validated = $this->validateRegions($regions);
+
+            $this->reportProgress('running', 45, '数据校验通过，共 ' . $validated['count'] . ' 条，正在全量替换落库...');
 
             $startTime = microtime(true);
             $this->importRegions($validated['regions']);
             $duration = round(microtime(true) - $startTime, 2);
 
+            $this->reportProgress('running', 90, '落库完成，正在清除缓存并记录版本...');
+
             $this->regionService->clearCache();
             $this->saveVersion($version);
             $this->cleanOldPacks($packDir);
+
+            $this->reportProgress('done', 100, '同步完成', '版本 ' . $version . '，共 ' . $validated['count'] . ' 条，耗时 ' . $duration . ' 秒');
 
             Log::info('[cmspro.region] 官方区划数据同步完成', [
                 'version' => $version,
@@ -199,7 +268,10 @@ class RegionDataSyncService
                 @unlink($zipPath);
             }
 
-            throw $e instanceof RuntimeException ? $e : new RuntimeException('区划数据同步失败：' . $e->getMessage());
+            $message = $e instanceof RuntimeException ? $e->getMessage() : '区划数据同步失败：' . $e->getMessage();
+            $this->reportProgress('error', 100, '同步失败', $message);
+
+            throw $e instanceof RuntimeException ? $e : new RuntimeException($message);
         }
     }
 
@@ -322,13 +394,20 @@ class RegionDataSyncService
             $now = date('Y-m-d H:i:s');
             $codeMap = []; // code => id，逐层收集供下层 parent 解析
 
+            // 各层落库进度基准（45% 起，闭包重建前推进到 82%），街道层为数据大头占最大区间
+            $levelBasePercent = [1 => 48, 2 => 52, 3 => 58, 4 => 64];
+            $levelNames = [1 => '省级', 2 => '市级', 3 => '区县级', 4 => '街道级'];
+
             foreach ([1, 2, 3, 4] as $level) {
                 $levelRows = array_values(array_filter(
                     $regions,
                     static fn (array $row): bool => (int) $row['level'] === $level
                 ));
 
-                foreach (array_chunk($levelRows, self::CHUNK_SIZE) as $chunk) {
+                $chunks = array_chunk($levelRows, self::CHUNK_SIZE);
+                $chunkTotal = count($chunks);
+
+                foreach ($chunks as $chunkIndex => $chunk) {
                     $batch = [];
                     foreach ($chunk as $row) {
                         $batch[] = [
@@ -346,6 +425,12 @@ class RegionDataSyncService
                         ];
                     }
                     DB::table('app_cmspro_region_region')->insert($batch);
+
+                    // 街道层数据量大，按 chunk 进度细分上报（64% → 82%）
+                    if ($level === 4 && $chunkTotal > 0) {
+                        $percent = 64 + (int) round((($chunkIndex + 1) / $chunkTotal) * 18);
+                        $this->reportProgress('running', $percent, '正在写入街道级数据（' . ($chunkIndex + 1) . '/' . $chunkTotal . ' 批）...');
+                    }
                 }
 
                 // 收集本层 code => id（契约已保证父级先于子级，此映射必命中）
@@ -356,9 +441,14 @@ class RegionDataSyncService
                 ) {
                     $codeMap[(string) $code] = (int) $id;
                 }
+
+                if ($level < 4) {
+                    $this->reportProgress('running', $levelBasePercent[$level], '已写入' . ($levelNames[$level] ?? '') . '数据，继续处理下级...');
+                }
             }
 
             // 闭包表全量重建（事务内，失败随事务回滚）
+            $this->reportProgress('running', 84, '正在重建层级关系（闭包表）...');
             $this->regionService->rebuildClosureTable();
         });
     }
@@ -438,10 +528,17 @@ class RegionDataSyncService
             if ($item !== null) {
                 $item->update(['value' => $version]);
             } else {
-                $group = ConfigGroup::where('code', 'app_cmspro_region_sync_settings')->first();
-                if ($group === null) {
-                    return;
-                }
+                // 配置组由框架在应用安装/升级时按 manifest 落库；未升级的站点组可能不存在，
+                // 此处自愈创建，确保版本号一定写入（否则前端「本地版本」恒显示「未同步」）
+                $group = ConfigGroup::firstOrCreate(
+                    ['code' => 'app_cmspro_region_sync_settings'],
+                    [
+                        'name' => '数据同步设置',
+                        'app_id' => 'cmspro.region',
+                        'sort' => 0,
+                        'status' => Status::ENABLED,
+                    ]
+                );
 
                 ConfigItem::create([
                     'group_id' => $group->id,

@@ -459,8 +459,15 @@ class RegionController extends Controller
     {
         set_time_limit(600);
 
+        // 长任务执行前释放 session 锁，避免前端进度轮询请求被 session 写锁阻塞
+        if (method_exists($request->session(), 'save')) {
+            $request->session()->save();
+        }
+
         try {
-            $result = $this->regionDataSyncService->sync($request->input('version'));
+            $result = $this->regionDataSyncService
+                ->withProgressToken($request->input('progress_token'))
+                ->sync($request->input('version'));
         } catch (\RuntimeException $e) {
             return response()->json([
                 'code' => 1,
@@ -472,6 +479,20 @@ class RegionController extends Controller
             'code' => 0,
             'message' => $result['message'] ?? '同步完成',
             'data' => $result,
+        ]);
+    }
+
+    /**
+     * 查询在线同步进度（供前端轮询，实时反馈各阶段）
+     */
+    public function syncProgress(Request $request): JsonResponse
+    {
+        $progress = $this->regionDataSyncService->getProgress((string) $request->input('progress_token'));
+
+        return response()->json([
+            'code' => 0,
+            'message' => 'success',
+            'data' => $progress,
         ]);
     }
 
