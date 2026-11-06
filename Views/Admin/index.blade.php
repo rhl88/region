@@ -102,6 +102,8 @@
                     </div>
                 </div>
                 <button class="layui-btn layui-btn-primary" id="exportSnapshotBtn" title="导出全量数据快照包，供上传版本服务器发布"><i class="fa fa-download"></i> 导出快照包</button>
+                <button class="layui-btn layui-btn-primary" id="importSnapshotBtn" title="导入其他站点分享的快照包（ZIP），全量替换本地区划数据"><i class="fa fa-upload"></i> 导入快照包</button>
+                <input type="file" id="importSnapshotFile" accept=".zip" style="display:none;">
                 <span style="position:relative;display:inline-block;vertical-align:middle;">
                     <button class="layui-btn layui-btn-normal" id="syncRegionDataBtn" title="从版本服务器在线同步官方区划数据（全量替换本地数据）"><i class="fa fa-cloud-download"></i> 在线同步官方数据</button>
                     <i class="recommend-badge">推荐</i>
@@ -1037,6 +1039,45 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         });
     });
 
+    // 同步/导入共用的进度条弹层：打开弹层并按 progress_token 轮询 sync-progress 接口刷新进度
+    // 返回 {token, finish}：token 随请求提交给服务端上报进度，finish() 停止轮询并关闭弹层
+    function openProgressLayer(title){
+        var token = 'prog_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+        var idx = layer.open({
+            type: 1,
+            title: title,
+            area: '480px',
+            closeBtn: 0,
+            shadeClose: false,
+            content: '<div style="padding:24px 28px;">' +
+                '<div id="syncStageText" style="font-size:13px;color:#666;margin-bottom:14px;min-height:20px;">正在准备...</div>' +
+                '<div class="layui-progress" lay-showpercent="true" lay-filter="syncProgress" style="height:16px;">' +
+                    '<div class="layui-progress-bar layui-bg-blue" lay-percent="0%"></div>' +
+                '</div>' +
+                '<div style="font-size:12px;color:#999;margin-top:16px;line-height:1.7;">' +
+                    '操作将<b style="color:#e6a23c;">全量替换</b>本地区划数据，请勿关闭或刷新页面。</div>' +
+                '</div>'
+        });
+        element.render('progress');
+
+        var pollTimer = setInterval(function(){
+            $.get('/api/admin/cmspro/region/sync-progress', {progress_token: token}, function(p){
+                if(p.code === 0 && p.data && p.data.state !== 'idle'){
+                    element.progress('syncProgress', p.data.percent + '%');
+                    $('#syncStageText').text(p.data.stage || p.data.message || '');
+                }
+            });
+        }, 800);
+
+        return {
+            token: token,
+            finish: function(){
+                clearInterval(pollTimer);
+                layer.close(idx);
+            }
+        };
+    }
+
     // 在线同步官方数据（消费端：检查更新 → 确认 → 全量替换落库，1 分钟内完成）
     $('#syncRegionDataBtn').on('click', function(){
         var btn = $(this);
@@ -1069,42 +1110,10 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
             layer.confirm(html, {title: '在线同步官方数据', btn: ['开始同步', '取消'], area: '540px'}, function(index){
                 layer.close(index);
 
-                // 进度令牌：服务端各阶段写入缓存，前端轮询展示实时进度条
-                var progressToken = 'sync_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
-                var progressIdx = layer.open({
-                    type: 1,
-                    title: '正在同步官方数据',
-                    area: '480px',
-                    closeBtn: 0,
-                    shadeClose: false,
-                    content: '<div style="padding:24px 28px;">' +
-                        '<div id="syncStageText" style="font-size:13px;color:#666;margin-bottom:14px;min-height:20px;">正在准备...</div>' +
-                        '<div class="layui-progress" lay-showpercent="true" lay-filter="syncProgress" style="height:16px;">' +
-                            '<div class="layui-progress-bar layui-bg-blue" lay-percent="0%"></div>' +
-                        '</div>' +
-                        '<div style="font-size:12px;color:#999;margin-top:16px;line-height:1.7;">' +
-                            '同步将<b style="color:#e6a23c;">全量替换</b>本地区划数据，请勿关闭或刷新页面。</div>' +
-                        '</div>'
-                });
-                element.render('progress');
+                var prog = openProgressLayer('正在同步官方数据');
 
-                // 轮询进度（800ms 一次），直到同步请求返回
-                var pollTimer = setInterval(function(){
-                    $.get('/api/admin/cmspro/region/sync-progress', {progress_token: progressToken}, function(p){
-                        if(p.code === 0 && p.data && p.data.state !== 'idle'){
-                            element.progress('syncProgress', p.data.percent + '%');
-                            $('#syncStageText').text(p.data.stage || p.data.message || '');
-                        }
-                    });
-                }, 800);
-
-                function finishProgress(){
-                    clearInterval(pollTimer);
-                    layer.close(progressIdx);
-                }
-
-                $.post('/api/admin/cmspro/region/sync-region-data', {version: null, progress_token: progressToken}, function(r){
-                    finishProgress();
+                $.post('/api/admin/cmspro/region/sync-region-data', {version: null, progress_token: prog.token}, function(r){
+                    prog.finish();
                     if(r.code === 0 && r.data && r.data.synced){
                         layer.msg('同步完成：版本 ' + r.data.version + '，共 ' + r.data.count + ' 条，耗时 ' + r.data.duration + ' 秒', {icon: 1, time: 8000});
                         setTimeout(function(){ location.reload(); }, 2500);
@@ -1114,7 +1123,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                         layer.msg(r.message || '同步失败', {icon: 2, time: 8000});
                     }
                 }).fail(function(){
-                    finishProgress();
+                    prog.finish();
                     layer.msg('同步请求失败，请重试', {icon: 2});
                 });
             });
@@ -1124,6 +1133,60 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         }).always(function(){
             btn.removeClass('layui-btn-disabled').prop('disabled', false);
         });
+    });
+
+    // 导入快照包（站点间分享：上传导出的 ZIP → 全量替换落库，复用进度条弹层）
+    $('#importSnapshotBtn').on('click', function(){
+        $('#importSnapshotFile').val('').trigger('click');
+    });
+
+    $('#importSnapshotFile').on('change', function(){
+        var file = this.files[0];
+        if(!file) return;
+
+        layer.confirm(
+            '<div style="text-align:left;line-height:1.9;">' +
+            '将导入快照包 <b>' + file.name + '</b>（' + (file.size / 1048576).toFixed(2) + ' MB）<br><br>' +
+            '<span style="color:#e6a23c;">⚠ 导入将<b style="color:#e6a23c;">全量替换</b>本地区划数据（本地手工修改会被覆盖），完成后自动重建层级关系与缓存。</span><br>' +
+            '仅请导入可信站点分享的快照包。确定导入吗？' +
+            '</div>',
+            {title: '导入快照包', btn: ['开始导入', '取消'], area: '480px'},
+            function(index){
+                layer.close(index);
+
+                var formData = new FormData();
+                formData.append('file', file);
+                var prog = openProgressLayer('正在导入快照包');
+                formData.append('progress_token', prog.token);
+
+                $('#importSnapshotBtn').addClass('layui-btn-disabled').prop('disabled', true);
+                $.ajax({
+                    url: '/api/admin/cmspro/region/import-snapshot',
+                    type: 'POST',
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    success: function(r){
+                        prog.finish();
+                        if(r.code === 0 && r.data && r.data.synced){
+                            layer.msg('导入完成：版本 ' + r.data.version + '，共 ' + r.data.count + ' 条，耗时 ' + r.data.duration + ' 秒', {icon: 1, time: 8000});
+                            setTimeout(function(){ location.reload(); }, 2500);
+                        } else {
+                            layer.msg(r.message || '导入失败', {icon: 2, time: 8000});
+                        }
+                    },
+                    error: function(xhr){
+                        prog.finish();
+                        var msg = '导入请求失败，请重试';
+                        try { msg = (JSON.parse(xhr.responseText) || {}).message || msg; } catch (e) {}
+                        layer.msg(msg, {icon: 2, time: 8000});
+                    },
+                    complete: function(){
+                        $('#importSnapshotBtn').removeClass('layui-btn-disabled').prop('disabled', false);
+                    }
+                });
+            }
+        );
     });
 
     // 导入地理位置数据（AJAX分步导入）

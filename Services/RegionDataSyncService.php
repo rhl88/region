@@ -43,6 +43,8 @@ class RegionDataSyncService
     /** 数据包内固定文件名（与版本服务器发布契约一致） */
     private const REGIONS_FILE = 'regions.json';
 
+    private const META_FILE = 'meta.json';
+
     /** 单次同步最大区划记录数（与版本服务器 20 万上限一致） */
     private const MAX_REGIONS = 200000;
 
@@ -232,8 +234,8 @@ class RegionDataSyncService
 
             $this->reportProgress('running', 30, '正在解包并校验数据契约...');
 
-            $regions = $this->readRegionsFromZip($zipPath);
-            $validated = $this->validateRegions($regions);
+            $package = $this->readPackageFromZip($zipPath);
+            $validated = $this->validateRegions($package['regions']);
 
             $this->reportProgress('running', 45, '数据校验通过，共 ' . $validated['count'] . ' 条，正在全量替换落库...');
 
@@ -270,6 +272,69 @@ class RegionDataSyncService
 
             $message = $e instanceof RuntimeException ? $e->getMessage() : '区划数据同步失败：' . $e->getMessage();
             $this->reportProgress('error', 100, '同步失败', $message);
+
+            throw $e instanceof RuntimeException ? $e : new RuntimeException($message);
+        }
+    }
+
+    /**
+     * 导入快照包（站点间分享，全量替换落库）。
+     *
+     * 接收其他站点「导出快照包」生成的 cmspro-region-data-{version}.zip，
+     * 走与在线同步相同的校验与落库链路：解包（防 Zip Slip）→ 契约校验 →
+     * 单事务全删重插（parent_code → parent_id）→ 闭包表重建 → 清缓存 → 记版本。
+     * 区别仅在数据来源（上传文件而非版本服务器下载）与版本号（取包内 meta.json，
+     * 缺失时回退 snapshot-{Y-m-d H:i:s 去符号}），因此不做 SHA-256 校验（无可信校验和来源）。
+     *
+     * 安全网与在线同步一致：契约校验在进事务前执行、落库单事务包裹，任一步失败本地数据零影响。
+     *
+     * @return array{synced:bool,message:string,version:string,count:int,stats:array<string,int>,duration:float}
+     *
+     * @throws RuntimeException 数据契约非法或落库失败时
+     */
+    public function importFromSnapshot(string $zipPath): array
+    {
+        try {
+            $this->reportProgress('running', 25, '正在解包并校验快照包...');
+
+            $package = $this->readPackageFromZip($zipPath);
+            $validated = $this->validateRegions($package['regions']);
+
+            // 版本号：优先包内 meta.json 声明值；缺失（手工打包）时按导入时刻回退
+            $version = $package['meta_version'] !== ''
+                ? $package['meta_version']
+                : 'snapshot-' . date('YmdHis');
+
+            $this->reportProgress('running', 45, '快照包校验通过，共 ' . $validated['count'] . ' 条，正在全量替换落库...');
+
+            $startTime = microtime(true);
+            $this->importRegions($validated['regions']);
+            $duration = round(microtime(true) - $startTime, 2);
+
+            $this->reportProgress('running', 90, '落库完成，正在清除缓存并记录版本...');
+
+            $this->regionService->clearCache();
+            $this->saveVersion($version);
+
+            $this->reportProgress('done', 100, '导入完成', '版本 ' . $version . '，共 ' . $validated['count'] . ' 条，耗时 ' . $duration . ' 秒');
+
+            Log::info('[cmspro.region] 快照包导入完成', [
+                'version' => $version,
+                'count' => $validated['count'],
+                'duration' => $duration,
+            ]);
+
+            return [
+                'synced' => true,
+                'message' => '导入完成',
+                'version' => $version,
+                'count' => $validated['count'],
+                'stats' => $validated['stats'],
+                'duration' => $duration,
+            ];
+        } catch (Throwable $e) {
+            $message = $e instanceof RuntimeException ? $e->getMessage() : '快照包导入失败：' . $e->getMessage();
+            $this->reportProgress('error', 100, '导入失败', $message);
 
             throw $e instanceof RuntimeException ? $e : new RuntimeException($message);
         }
@@ -454,11 +519,11 @@ class RegionDataSyncService
     }
 
     /**
-     * 解包数据包并读取 regions.json（防 Zip Slip，兼容包内多一层包裹目录）。
+     * 解包数据包并读取 regions.json 与 meta.json（防 Zip Slip，兼容包内多一层包裹目录）。
      *
-     * @return array<int,mixed> 区划记录数组
+     * @return array{regions:array<int,mixed>,meta_version:string} 区划记录数组与包内声明的版本号（缺失为空串）
      */
-    protected function readRegionsFromZip(string $zipPath): array
+    protected function readPackageFromZip(string $zipPath): array
     {
         $workDir = storage_path(self::WORK_DIR_PREFIX . uniqid());
         $this->ensureDir($workDir);
@@ -486,16 +551,19 @@ class RegionDataSyncService
             }
             $zip->close();
 
-            // 定位 regions.json（兼容包内多一层包裹目录）
-            $regionsFile = null;
-            foreach ([$workDir . '/' . self::REGIONS_FILE, $workDir . '/*/' . self::REGIONS_FILE] as $pattern) {
-                $candidates = glob($pattern) ?: [];
-                if ($candidates !== []) {
-                    $regionsFile = $candidates[0];
-                    break;
+            // 定位文件（兼容包内多一层包裹目录）
+            $locate = function (string $fileName) use ($workDir): ?string {
+                foreach ([$workDir . '/' . $fileName, $workDir . '/*/' . $fileName] as $pattern) {
+                    $candidates = glob($pattern) ?: [];
+                    if ($candidates !== []) {
+                        return $candidates[0];
+                    }
                 }
-            }
 
+                return null;
+            };
+
+            $regionsFile = $locate(self::REGIONS_FILE);
             if ($regionsFile === null) {
                 throw new RuntimeException('数据包缺少 ' . self::REGIONS_FILE);
             }
@@ -505,7 +573,17 @@ class RegionDataSyncService
                 throw new RuntimeException(self::REGIONS_FILE . ' 不是合法的 JSON 数组');
             }
 
-            return $regions;
+            // meta.json 可选：存在时取包内声明的版本号（供导入后记录本地版本）
+            $metaVersion = '';
+            $metaFile = $locate(self::META_FILE);
+            if ($metaFile !== null) {
+                $meta = json_decode((string) File::get($metaFile), true);
+                if (is_array($meta)) {
+                    $metaVersion = trim((string) ($meta['version'] ?? ''));
+                }
+            }
+
+            return ['regions' => $regions, 'meta_version' => $metaVersion];
         } finally {
             if (is_dir($workDir)) {
                 File::deleteDirectory($workDir);

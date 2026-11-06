@@ -1,6 +1,6 @@
 # 中国行政区划 应用文档
 
-> 应用ID：`cmspro.region` | 文档版本：1.2.0 | 应用版本：1.3.0 | 依赖：PHP ≥ 8.3, CmsPro ≥ 5.0.0
+> 应用ID：`cmspro.region` | 文档版本：1.3.0 | 应用版本：1.4.0 | 依赖：PHP ≥ 8.3, CmsPro ≥ 5.0.0
 
 - 官方地址：https://www.cmspro.cn/apps/cmspro.region
 
@@ -12,6 +12,7 @@
 - **数据演示**：三级联动选择、街道四级选择、地理信息展示；选中含坐标区划时在 Leaflet + 高德瓦片地图上自动定位标记
 - **API 服务**：供其他应用调用的区划查询接口（级联选择器、路径查询、IP 归属地等）
 - **快照导出**：将库中全量区划导出为标准化 ZIP 快照包（regions.json + meta.json），供上传版本服务器（Versionsvr「区划数据」服务）发布分发，使区划数据更新与本应用发版解耦
+- **快照导入**：接收其他站点分享的快照包 ZIP 直接上传导入（全量替换落库，与在线同步共用校验链路与实时进度条），支持站点间点对点分享数据集
 - **在线同步官方数据**：从版本服务器在线同步官方区划数据（单事务全量替换落库 + 闭包表重建，任一步失败整体回滚零影响），站点数据初始化从约 1 小时降至 1 分钟内
 
 ## 2. 目录结构
@@ -25,7 +26,7 @@ CmsproRegion/
 ├── Models/                           # 区划模型与闭包表模型
 ├── Services/RegionService.php        # 区划业务逻辑（导入/查询/统计）
 ├── Services/RegionSnapshotService.php # 全量快照导出（regions.json + meta.json 打 ZIP）
-├── Services/RegionDataSyncService.php # 在线同步官方数据（下载校验→单事务全量替换落库→记版本）
+├── Services/RegionDataSyncService.php # 在线同步官方数据与快照包导入（下载/上传→校验→单事务全量替换落库→记版本）
 ├── Routes/admin.php                  # 后台路由
 ├── Tests/                            # 应用功能测试
 ├── Views/Admin/                      # 后台视图（数据管理/数据演示页）

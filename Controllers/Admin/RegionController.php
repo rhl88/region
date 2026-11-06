@@ -496,6 +496,60 @@ class RegionController extends Controller
         ]);
     }
 
+    // ========== 快照包导入方法（站点间分享） ==========
+
+    /**
+     * 导入快照包（消费端：全量替换落库）
+     *
+     * 接收其他站点「导出快照包」生成的 ZIP（regions.json + 可选 meta.json），
+     * 校验契约后单事务全量替换本地区划数据，失败整体回滚零影响。
+     * 与在线同步共用进度机制（progress_token + sync-progress 轮询）。
+     */
+    public function importSnapshot(Request $request): JsonResponse
+    {
+        set_time_limit(600);
+
+        $data = $request->validate([
+            'file' => ['required', 'file', 'max:51200', 'mimes:zip'],
+            'progress_token' => ['nullable', 'string', 'max:64'],
+        ], [
+            'file.required' => '请选择快照包文件',
+            'file.max' => '快照包不能超过 50MB',
+            'file.mimes' => '仅支持 zip 格式的快照包',
+        ]);
+
+        // 长任务执行前释放 session 锁，避免前端进度轮询请求被 session 写锁阻塞
+        if (method_exists($request->session(), 'save')) {
+            $request->session()->save();
+        }
+
+        // 上传文件暂存至 storage/app（zip 校验与解包需要真实磁盘路径）
+        $tempPath = storage_path('app/cmspro-region-import-' . uniqid() . '.zip');
+
+        try {
+            $request->file('file')->move(dirname($tempPath), basename($tempPath));
+
+            $result = $this->regionDataSyncService
+                ->withProgressToken($request->input('progress_token'))
+                ->importFromSnapshot($tempPath);
+        } catch (\RuntimeException $e) {
+            return response()->json([
+                'code' => 1,
+                'message' => $e->getMessage(),
+            ]);
+        } finally {
+            if (is_file($tempPath)) {
+                @unlink($tempPath);
+            }
+        }
+
+        return response()->json([
+            'code' => 0,
+            'message' => $result['message'] ?? '导入完成',
+            'data' => $result,
+        ]);
+    }
+
     // ========== 民政部API导入方法 ==========
 
     /**

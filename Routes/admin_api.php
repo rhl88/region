@@ -11,6 +11,9 @@ Route::get('/sync-check-update', [RegionController::class, 'syncCheckUpdate']);
 Route::post('/sync-region-data', [RegionController::class, 'syncRegionData']);
 Route::get('/sync-progress', [RegionController::class, 'syncProgress']);
 
+// 导入快照包（站点间分享：上传导出的 ZIP 全量替换落库，与在线同步共用进度机制）
+Route::post('/import-snapshot', [RegionController::class, 'importSnapshot']);
+
 Route::get('/provinces', [RegionController::class, 'provinces']);
 Route::get('/children', [RegionController::class, 'children']);
 Route::get('/tree', [RegionController::class, 'tree']);

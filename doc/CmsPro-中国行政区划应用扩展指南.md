@@ -1,6 +1,6 @@
 # CmsPro 中国行政区划应用扩展指南
 
-> 版本：1.7.2 | 更新日期：2026-11-06
+> 版本：1.8.0 | 更新日期：2026-11-06
 > 适用系统：CmsPro v5.0.0+
 > 应用ID：`cmspro.region`
 
@@ -21,6 +21,7 @@
 - **地理位置数据**：支持导入城市和区县的经纬度信息，便于地图定位和距离计算
 - **快照导出**：将库中全量区划导出为标准化 ZIP 快照包（regions.json + meta.json），供上传版本服务器（Versionsvr「区划数据」服务）发布分发，使区划数据更新与本应用发版解耦
 - **在线同步官方数据**：从版本服务器在线同步官方区划数据（全量替换落库：单事务全删重插 + 闭包表重建），站点数据初始化从约 1 小时降至 1 分钟内，任一步失败整体回滚零影响
+- **导入快照包**：接收其他站点分享的快照包 ZIP 直接上传导入（全量替换落库，与在线同步共用校验链路与进度机制），支持站点间点对点分享数据集
 
 ### 数据源
 
@@ -703,11 +704,13 @@ $snapshot = $snapshotService->export('20261106001');
 
 **导出规则**：库中须已有省级（level=1）数据；单次上限 20 万条（与版本服务器一致）；版本号仅允许字母/数字/点/下划线/连字符（≤32 位）；导出流式分块（1000 条/块）避免大库内存溢出；调用方负责下载后删除快照包文件。
 
-### 4.18 RegionDataSyncService 在线同步官方数据服务
+### 4.18 RegionDataSyncService 在线同步官方数据与快照包导入服务
 
 独立于 `RegionService` 的在线同步服务（`Services/RegionDataSyncService.php`，消费端），从版本服务器（Versionsvr「区划数据」服务）在线同步官方区划数据，**全量替换**本地库——站点数据初始化/更新从「一键导入」（约 1 小时）降至 **1 分钟内**。
 
 **后台入口**：数据管理页「在线同步官方数据」按钮，交互为「检查更新 → 弹窗确认 → 同步（实时进度条）」，涉及三个接口：`GET /api/admin/cmspro/region/sync-check-update`（检查更新）+ `POST /api/admin/cmspro/region/sync-region-data`（执行同步，`version` 参数可指定历史版本回退、`progress_token` 参数启用进度上报）+ `GET /api/admin/cmspro/region/sync-progress`（轮询进度，前端 800ms/次）。
+
+另有「**导入快照包**」按钮（站点间分享）：`POST /api/admin/cmspro/region/import-snapshot`（`file` 必填 zip ≤50MB、`progress_token` 可选），上传其他站点「导出快照包」生成的 ZIP，复用同一套契约校验与单事务全量替换落库链路，版本号取包内 `meta.json` 的 `version`（缺失回退 `snapshot-{YmdHis}`）；因上传包无可信校验和来源，不做 SHA-256 校验，须仅导入可信站点分享的包。
 
 ```php
 use App\Apps\CmsproRegion\Services\RegionDataSyncService;
@@ -957,6 +960,7 @@ ORDER BY c.depth DESC;
 12. **地理位置数据**：经纬度信息仅在城市和区县级别可用，街道级别暂不支持；数据源为本地Excel文件 `Data/地理位置编码.xlsx`，需手动点击「导入地理位置」按钮导入
 13. **快照导出契约稳定性**：导出包内 `regions.json` / `meta.json` 的文件名、字段集与排序规则为版本服务器（Versionsvr「区划数据」服务）与消费端（各站点区划应用在线同步）共同依赖的分发契约，调整任何一项前须同步评估版本服务器校验规则与各站点消费端兼容性，禁止单方面变更
 14. **在线同步为全量替换**：`RegionDataSyncService::sync()` 会全量替换本地区划数据（本地手工修改会被覆盖），仅适用于「以官方数据为准」的场景；需保留本地定制的站点请使用导入链路并自行维护差异
+15. **导入快照包为不可信上传**：`importFromSnapshot()` 接受任意来源的 ZIP 上传，虽经防 Zip Slip 与契约校验（非法数据进事务前拒绝、落库单事务回滚），但**不做 SHA-256 校验**（无可信校验和来源），仅限后台管理员使用且应只导入可信站点分享的包
 15. **同步版本配置组依赖**：已同步版本号记录依赖配置组「数据同步设置」（`app_cmspro_region_sync_settings`）落库，该组由框架在应用**安装/升级**时按 manifest `config_groups` 声明创建——旧站点首次使用在线同步前需在后台「应用管理」对本应用执行一次升级，否则版本号记录不生效（同步本身不受影响）
 
 ***
@@ -974,3 +978,4 @@ ORDER BY c.depth DESC;
 | 1.6.0 | 2026-11-06 | 开发团队 | 新增 `RegionSnapshotService` 快照导出服务（4.17 节）与「导出快照包」后台按钮：将库中全量区划导出为标准化 ZIP 快照包（regions.json + meta.json），供上传版本服务器（Versionsvr「区划数据」服务）发布分发；导出契约与版本服务器校验规则完全对齐（level+code 排序、parent_id→parent_code 转换、顶级 parent_code='0'、status 0/1 全量、无坐标 null、meta 含 version/count/stats/generated_at/format）；新增权限 `cmspro.region.export` |
 | 1.7.0 | 2026-11-06 | 开发团队 | 新增 `RegionDataSyncService` 在线同步官方数据服务（4.18 节，消费端）与「在线同步官方数据」后台按钮：从版本服务器在线同步官方区划数据，检查更新 → 下载 SHA-256 校验 → 解包（防 Zip Slip）→ 契约校验 → 单事务全量替换落库（全删 → 按 level 分层 chunk 批量插入 → 闭包表重建）→ 清缓存 → 记版本；五重安全网（校验和/前置契约/事务回滚/版本回退/重复跳过），任一步失败本地数据零影响；新增配置组「数据同步设置」；站点数据初始化从约 1 小时降至 1 分钟内（49334 条实测 5.84s） |
 | 1.7.2 | 2026-11-06 | 开发团队 | 在线同步体验修复（4.18 节，应用版本不变）：① `saveVersion()` 配置组缺失时 `firstOrCreate` 自愈建组，修复已同步但前端仍显示「未同步」；② 新增进度上报机制——`withProgressToken()` 链式设置令牌后 sync 各阶段经 Cache 写进度（生产 redis 跨进程共享），`getProgress()` 供 `GET sync-progress` 轮询，前端实时进度条替代静态提示；控制器长任务前 `session()->save()` 释放 session 锁避免轮询阻塞 |
+| 1.8.0 | 2026-11-06 | 开发团队 | 新增 `importFromSnapshot()` 快照包导入（4.18 节，站点间分享）：接收上传 ZIP（`POST import-snapshot`，zip ≤50MB），复用在线同步的解包（防 Zip Slip）/契约校验/单事务全量替换落库/进度上报链路；版本号取包内 meta.json（缺失回退 `snapshot-{YmdHis}`）；不做 SHA-256 校验（上传包无可信校验和来源），注意事项新增第 15 条「导入快照包为不可信上传」 |
