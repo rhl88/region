@@ -3,6 +3,7 @@
 namespace App\Apps\CmsproRegion\Controllers\Admin;
 
 use App\Apps\CmsproRegion\Models\Region;
+use App\Apps\CmsproRegion\Services\MapSettingService;
 use App\Apps\CmsproRegion\Services\RegionDataSyncService;
 use App\Apps\CmsproRegion\Services\RegionService;
 use App\Apps\CmsproRegion\Services\RegionSnapshotService;
@@ -18,14 +19,18 @@ class RegionController extends Controller
 
     protected RegionDataSyncService $regionDataSyncService;
 
+    protected MapSettingService $mapSettingService;
+
     public function __construct(
         RegionService $regionService,
         RegionSnapshotService $regionSnapshotService,
-        RegionDataSyncService $regionDataSyncService
+        RegionDataSyncService $regionDataSyncService,
+        MapSettingService $mapSettingService
     ) {
         $this->regionService = $regionService;
         $this->regionSnapshotService = $regionSnapshotService;
         $this->regionDataSyncService = $regionDataSyncService;
+        $this->mapSettingService = $mapSettingService;
     }
 
     /**
@@ -35,13 +40,13 @@ class RegionController extends Controller
     {
         $stats = $this->regionService->getStats();
 
-        // 开发模式（APP_DEV_MODE=true）下才提供「更新坐标」入口，并复用地图应用的浏览器端 AK
+        // 开发模式（APP_DEV_MODE=true）下才提供「更新坐标」入口，AK 优先取本应用生效配置
         $devMode = (bool) config('app.dev_mode');
-        $baiduAk = $devMode && function_exists('cmspro_maps_config')
-            ? (string) cmspro_maps_config('baidu_js_ak', '')
-            : '';
+        $baiduAk = $devMode ? $this->devBaiduAk() : '';
+        // AK 缺失时给出具体原因，前端点击「更新坐标」时引导到「应用设置」页
+        $coordMapTip = ($devMode && $baiduAk === '') ? $this->coordMapTip() : '';
 
-        return view('cmsproregion::Admin.index', compact('stats', 'devMode', 'baiduAk'));
+        return view('cmsproregion::Admin.index', compact('stats', 'devMode', 'baiduAk', 'coordMapTip'));
     }
 
     /**
@@ -58,7 +63,56 @@ class RegionController extends Controller
         $hasVillage = ($hasStreet && $stats['village'] > 0);
         $hasGeo = ($geoStats['with_geo'] > 0);
 
-        return view('cmsproregion::Admin.demo', compact('stats', 'geoStats', 'hasLevel3', 'hasStreet', 'hasVillage', 'hasGeo'));
+        // 地图配置：未配置或加载失败时演示页回退 Leaflet + 高德瓦片
+        $mapConfig = $this->mapSettingService->resolveEffective();
+
+        return view('cmsproregion::Admin.demo', compact('stats', 'geoStats', 'hasLevel3', 'hasStreet', 'hasVillage', 'hasGeo', 'mapConfig'));
+    }
+
+    /**
+     * 开发模式「更新坐标」所需的百度 JSAPI AK
+     *
+     * 优先使用本应用生效配置（独立配置或关联地图应用且厂商为百度），
+     * 其次回退到「地图」应用的浏览器端 AK，保持既有行为不变。
+     */
+    private function devBaiduAk(): string
+    {
+        $effective = $this->mapSettingService->resolveEffective();
+        if ($effective['configured'] && $effective['provider'] === 'baidu') {
+            return (string) $effective['key'];
+        }
+
+        return function_exists('cmspro_maps_config')
+            ? (string) cmspro_maps_config('baidu_js_ak', '')
+            : '';
+    }
+
+    /**
+     * 「更新坐标」缺少百度 AK 时的具体原因（不含任何密钥）
+     *
+     * 按「配置组未注册 → 未启用地图 → 生效厂商非百度 → 未填写密钥」顺序判断，
+     * 使前端提示能直接指向「应用设置」页中需要修正的那一项。
+     */
+    private function coordMapTip(): string
+    {
+        if (! $this->mapSettingService->configGroupReady()) {
+            return '地图配置组尚未注册，请先在「应用管理」将本应用升级到 1.6.0，再到「应用设置」填写百度地图 AK';
+        }
+
+        $effective = $this->mapSettingService->resolveEffective();
+
+        if ($effective['source'] === MapSettingService::SOURCE_NONE) {
+            return '「应用设置」中地图配置来源为「不启用」，请改为「本应用独立配置」并选择百度地图、填写百度 JS AK';
+        }
+
+        if ($effective['configured'] && $effective['provider'] !== 'baidu') {
+            $names = ['amap' => '高德地图', 'tencent' => '腾讯地图'];
+            $name = $names[$effective['provider']] ?? $effective['provider'];
+
+            return '「应用设置」当前生效厂商为' . $name . '，而「更新坐标」依赖百度地图地址解析，请改用百度地图并填写百度 JS AK';
+        }
+
+        return '「应用设置」中尚未填写百度 JS AK（关联「地图」应用时也未配置百度浏览器端 AK），请先完成配置';
     }
 
     /**

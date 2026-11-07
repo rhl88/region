@@ -281,7 +281,7 @@
 <script src="{{ asset('CmsProUi/component/layui/layui.js') }}"></script>
 <script src="{{ asset('CmsProUi/component/pear/pear.js') }}"></script>
 @if($devMode && $baiduAk)
-{{-- 开发模式「更新坐标」：百度地图 JSAPI，AK 复用「地图」应用的浏览器端 AK --}}
+{{-- 开发模式「更新坐标」：百度地图 JSAPI，AK 取自「应用设置」生效配置，其次回退「地图」应用 --}}
 <script>window.__bmapApiReady = false; function onBMapApiReady(){ window.__bmapApiReady = true; }</script>
 <script src="https://api.map.baidu.com/api?v=4.0&ak={{ $baiduAk }}&callback=onBMapApiReady"></script>
 @endif
@@ -340,12 +340,16 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     });
 
     // ==================== 更新坐标（开发模式） ====================
-    // 依赖「地图」应用的浏览器端 AK，仅在 APP_DEV_MODE=true 时渲染入口
-    var coordPlaceholders = ['', '省/直辖市', '市', '区/县', '街道/乡镇'];
+    // 依赖百度地图 JS AK（「应用设置」生效配置优先，其次「地图」应用），仅在 APP_DEV_MODE=true 时渲染入口
+    var coordPlaceholders = ['', '省/直辖市', '市', '区/县', '街道/乡镇', '村/社区'];
+    // 单个更新级联最大层级（含村/社区）
+    var coordMaxDepth = 5;
     var coordPath = [];
     // 库中经纬度查询序号：级联快速切换时丢弃过期响应
     var coordLonLatSeq = 0;
     var coordBaiduAk = @json($baiduAk ?? '');
+    // AK 缺失原因：由服务端按「应用设置」当前配置状态生成，空串表示配置齐全可直接使用
+    var coordMapTip = @json($coordMapTip ?? '');
 
     /**
      * 按已选路径组装百度请求地址：
@@ -417,7 +421,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
 
     // 重置指定层级及之后的级联下拉
     function resetCoordSelects(from){
-        for(var i = from; i <= 4; i++){
+        for(var i = from; i <= coordMaxDepth; i++){
             $('#coordSel' + i)
                 .html('<option value="">' + coordPlaceholders[i] + '</option>')
                 .prop('disabled', true);
@@ -426,7 +430,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
 
     // 加载下级区划，占位文案按实际层级显示（如直辖市下一级直接是区/县）
     function loadCoordChildren(depth, parentCode){
-        if(depth > 4){
+        if(depth > coordMaxDepth){
             return;
         }
         $.get('/api/admin/cmspro/region/children', {code: parentCode}, function(res){
@@ -922,8 +926,17 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
 
     // 打开「更新坐标」弹窗
     $('#updateCoordBtn').on('click', function(){
+        // 前置检测：AK 缺失时说明「应用设置」中缺哪一项，并提供跳转入口
         if(!coordBaiduAk){
-            layer.msg('未配置百度浏览器端 AK，请先在「地图」应用中填写', {icon: 2, time: 4000});
+            layer.confirm(coordMapTip || '尚未配置百度地图 AK，请先到「应用设置」中配置', {
+                icon: 2,
+                title: '地图未配置',
+                area: '480px',
+                btn: ['前往应用设置', '取消']
+            }, function(index){
+                layer.close(index);
+                location.href = '/admin/cmspro/region/setting';
+            });
             return;
         }
         var html = ''
@@ -943,6 +956,8 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
             + '      <select class="coord-select" id="coordSel3" disabled></select>'
             + '      <i class="fa fa-angle-right coord-arrow"></i>'
             + '      <select class="coord-select" id="coordSel4" disabled></select>'
+            + '      <i class="fa fa-angle-right coord-arrow"></i>'
+            + '      <select class="coord-select" id="coordSel5" disabled></select>'
             + '    </div>'
             + '    <div class="coord-info">'
             + '      <div><span class="coord-label">目标区划：</span><span id="coordTarget">-</span></div>'
@@ -991,7 +1006,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         layer.open({
             type: 1,
             title: '更新坐标（开发模式）',
-            area: ['820px', 'auto'],
+            area: ['900px', 'auto'],
             shadeClose: false,
             content: html,
             success: function(layero, index){
@@ -1006,8 +1021,8 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                     $('#coordPane' + (pane === 'single' ? 'Single' : 'Batch')).addClass('active');
                 });
 
-                // 单个更新级联
-                [1, 2, 3, 4].forEach(function(depth){
+                // 单个更新级联（省 → 市 → 区/县 → 街道/乡镇 → 村/社区）
+                [1, 2, 3, 4, 5].forEach(function(depth){
                     $('#coordSel' + depth).on('change', function(){
                         var $option = $(this).find('option:selected');
                         var code = $(this).val();
@@ -1904,7 +1919,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                 return;
             }
             if(!info.need_update){
-                layer.msg('本地已是最新版本 ' + (info.local_version || '-') + '，无需同步', {icon: 1});
+                layer.msg(info.message && info.message !== 'ok' ? info.message : ('本地已是最新版本 ' + (info.local_version || '-') + '，无需同步'), {icon: 1});
                 return;
             }
             var stats = info.stats || {};

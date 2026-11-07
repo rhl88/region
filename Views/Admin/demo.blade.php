@@ -437,16 +437,322 @@ layui.use(['layer', 'jquery'], function(){
         });
     }
 
-    // 地图定位（Leaflet + 高德瓦片，坐标为GCJ-02，与高德瓦片匹配）
-    var map = null;
-    var marker = null;
-    var boundaryLayer = null;   // 当前行政区划边界图层
+    // ====== 地图渲染层 ======
+    // 未配置厂商密钥（或 SDK 加载失败）时用 Leaflet + 高德瓦片，坐标为 GCJ-02，与瓦片匹配；
+    // 已配置时用厂商官方 JS API 渲染底图、定位与行政边界，库内 GCJ-02 坐标按需转换。
+    var MAP_CONFIG = @json($mapConfig);
+    var MAP_PROVIDER = (MAP_CONFIG.configured && MAP_CONFIG.provider) || '';
+    var map = null;             // Leaflet 地图实例（仅 Leaflet 模式使用）
+    var sdk = null;             // 厂商地图适配器；null 表示当前为 Leaflet 模式
+    var marker = null;          // 当前中心点标记（Leaflet 模式）
+    var boundaryLayer = null;   // 当前行政区划边界图层（Leaflet 模式）
     var boundarySeq = 0;        // 边界请求序号：级联快速切换时丢弃过期响应
+    var currentRegion = null;   // 当前选中区划：SDK 异步就绪或降级后用于补绘
+    var currentFullPath = '';   // 当前完整路径
 
     // 边界数据源：阿里 DataV GeoJSON（GCJ-02，与后端 RegionService::$geojsonBaseUrl 同源）
     var BOUNDARY_URL = 'https://geo.datav.aliyun.com/areas_v3/bound/';
 
+    /** GCJ-02 转 BD-09（百度坐标系），返回 [lng, lat]。 */
+    function gcj02ToBd09(lng, lat){
+        var z = Math.sqrt(lng * lng + lat * lat) + 0.00002 * Math.sin(lat * Math.PI * 3000.0 / 180.0);
+        var theta = Math.atan2(lat, lng) + 0.00002 * Math.cos(lng * Math.PI * 3000.0 / 180.0);
+        return [z * Math.cos(theta) + 0.0065, z * Math.sin(theta) + 0.006];
+    }
+
+    /** 把库内 GCJ-02 坐标转为当前厂商坐标系，返回 [lng, lat]。 */
+    function toProviderCoord(lng, lat){
+        return MAP_PROVIDER === 'baidu' ? gcj02ToBd09(lng, lat) : [lng, lat];
+    }
+
+    /** 从 GeoJSON 中提取所有环（Polygon / MultiPolygon），每项为 [[lng, lat], ...]。 */
+    function extractRings(geojson){
+        var rings = [];
+        (geojson.features || []).forEach(function(feature){
+            var geometry = feature && feature.geometry;
+            if(!geometry || !geometry.coordinates){ return; }
+            if(geometry.type === 'Polygon'){
+                geometry.coordinates.forEach(function(ring){ rings.push(ring); });
+            }else if(geometry.type === 'MultiPolygon'){
+                geometry.coordinates.forEach(function(polygon){
+                    polygon.forEach(function(ring){ rings.push(ring); });
+                });
+            }
+        });
+        return rings;
+    }
+
+    /**
+     * 动态加载厂商 SDK 并轮询确认全局对象就绪
+     * 轮询兜底原因：部分厂商脚本 onload 触发时全局对象尚未挂载（百度需 callback 引导）
+     */
+    function loadSdk(url, isReady, onReady, onError){
+        var finished = false;
+        var startedAt = Date.now();
+        var timer = setInterval(check, 200);
+        var script = document.createElement('script');
+        script.src = url;
+        script.onerror = function(){ finish(false, '地图 SDK 加载失败，请检查密钥与域名白名单'); };
+        document.body.appendChild(script);
+
+        function check(){
+            if(finished){ return; }
+            if(isReady()){ finish(true, ''); return; }
+            if(Date.now() - startedAt > 15000){ finish(false, '地图 SDK 初始化超时'); }
+        }
+        function finish(ok, message){
+            finished = true;
+            clearInterval(timer);
+            if(ok){ onReady(); }else{ onError(message); }
+        }
+    }
+
+    /** 厂商地图不可用时降级到 Leaflet + 高德瓦片，并重绘当前选中区划。 */
+    function fallbackToLeaflet(message){
+        sdk = null;
+        MAP_PROVIDER = '';
+        layer.msg(message + '，已切换到备用底图', { icon: 0, time: 4000 });
+        if(!initLeafletMap()){ return; }
+        if(currentRegion){ showOnMap(currentRegion, currentFullPath); }
+    }
+
+    /** 百度地图 BMapGL 适配器（坐标须为 BD-09，由 toProviderCoord 转换）。 */
+    function createBaiduSdk(){
+        var instance = null;
+        var markerOverlay = null;
+        var polygons = [];
+
+        return {
+            init: function(){
+                var center = toProviderCoord(104.195397, 35.86166);
+                instance = new BMapGL.Map(document.getElementById('geoMap'));
+                instance.centerAndZoom(new BMapGL.Point(center[0], center[1]), 4);
+                instance.enableScrollWheelZoom(true);
+            },
+            showPoint: function(lng, lat, html){
+                var point = new BMapGL.Point(lng, lat);
+                instance.centerAndZoom(point, 12);
+                if(markerOverlay){ instance.removeOverlay(markerOverlay); }
+                markerOverlay = new BMapGL.Marker(point);
+                instance.addOverlay(markerOverlay);
+                instance.openInfoWindow(new BMapGL.InfoWindow(html, { width: 280 }), point);
+            },
+            clearPoint: function(){
+                if(markerOverlay){ instance.removeOverlay(markerOverlay); markerOverlay = null; }
+                instance.closeInfoWindow();
+            },
+            drawRings: function(rings){
+                this.clearBoundary();
+                rings.forEach(function(ring){
+                    if(ring.length < 3){ return; }
+                    var points = ring.map(function(coord){
+                        var p = toProviderCoord(coord[0], coord[1]);
+                        return new BMapGL.Point(p[0], p[1]);
+                    });
+                    var polygon = new BMapGL.Polygon(points, {
+                        strokeColor: '#0091ea', strokeWeight: 1, strokeOpacity: 1,
+                        fillColor: '#80d8ff', fillOpacity: 0.4
+                    });
+                    instance.addOverlay(polygon);
+                    polygons.push(polygon);
+                });
+                this.fitAll();
+            },
+            clearBoundary: function(){
+                polygons.forEach(function(polygon){ instance.removeOverlay(polygon); });
+                polygons = [];
+            },
+            fitAll: function(){
+                var points = [];
+                polygons.forEach(function(polygon){ points = points.concat(polygon.getPath()); });
+                if(points.length){ instance.setViewport(points); }
+            },
+            resize: function(){ if(instance.checkResize){ instance.checkResize(); } }
+        };
+    }
+
+    /** 高德地图 AMap 2.0 适配器（坐标 GCJ-02，与库内一致）。 */
+    function createAmapSdk(){
+        var instance = null;
+        var markerOverlay = null;
+        var infoWindow = null;
+        var polygons = [];
+
+        return {
+            init: function(){
+                instance = new AMap.Map('geoMap', {
+                    zoom: 4, center: [104.195397, 35.86166], viewMode: '2D', resizeEnable: true
+                });
+            },
+            showPoint: function(lng, lat, html){
+                var position = [lng, lat];
+                if(markerOverlay){ instance.remove(markerOverlay); }
+                if(infoWindow){ infoWindow.close(); }
+                markerOverlay = new AMap.Marker({ position: position, map: instance });
+                infoWindow = new AMap.InfoWindow({ content: html, offset: new AMap.Pixel(0, -30) });
+                infoWindow.open(instance, position);
+                instance.setZoomAndCenter(12, position);
+            },
+            clearPoint: function(){
+                if(markerOverlay){ instance.remove(markerOverlay); markerOverlay = null; }
+                if(infoWindow){ infoWindow.close(); infoWindow = null; }
+            },
+            drawRings: function(rings){
+                this.clearBoundary();
+                rings.forEach(function(ring){
+                    if(ring.length < 3){ return; }
+                    polygons.push(new AMap.Polygon({
+                        path: ring.map(function(coord){ return toProviderCoord(coord[0], coord[1]); }),
+                        map: instance,
+                        strokeColor: '#0091ea', strokeWeight: 1, strokeOpacity: 1,
+                        fillColor: '#80d8ff', fillOpacity: 0.4
+                    }));
+                });
+                this.fitAll();
+            },
+            clearBoundary: function(){
+                if(polygons.length){ instance.remove(polygons); }
+                polygons = [];
+            },
+            fitAll: function(){
+                if(polygons.length){ instance.setFitView(polygons, false, [20, 20, 20, 20]); }
+            },
+            resize: function(){ /* resizeEnable 已开启，容器变化自动适配 */ }
+        };
+    }
+
+    /** 腾讯地图 TMap GL 适配器（坐标 GCJ-02，与库内一致）。 */
+    function createTencentSdk(){
+        var instance = null;
+        var markerLayer = null;
+        var infoWindow = null;
+        var polygonLayer = null;
+        var ringBounds = null;
+
+        return {
+            init: function(){
+                instance = new TMap.Map(document.getElementById('geoMap'), {
+                    center: new TMap.LatLng(35.86166, 104.195397), zoom: 4
+                });
+            },
+            showPoint: function(lng, lat, html){
+                var position = new TMap.LatLng(lat, lng);
+                if(markerLayer){ markerLayer.setMap(null); }
+                if(infoWindow){ infoWindow.close(); }
+                markerLayer = new TMap.MultiMarker({
+                    map: instance,
+                    geometries: [{ id: 'region', position: position }]
+                });
+                infoWindow = new TMap.InfoWindow({
+                    map: instance, position: position, content: html, offset: { x: 0, y: -34 }
+                });
+                instance.setCenter(position);
+                instance.setZoom(12);
+            },
+            clearPoint: function(){
+                if(markerLayer){ markerLayer.setMap(null); markerLayer = null; }
+                if(infoWindow){ infoWindow.close(); infoWindow = null; }
+            },
+            drawRings: function(rings){
+                this.clearBoundary();
+                var geometries = [];
+                var bounds = { minLat: 90, maxLat: -90, minLng: 180, maxLng: -180 };
+                rings.forEach(function(ring, index){
+                    if(ring.length < 3){ return; }
+                    var path = ring.map(function(coord){
+                        var p = toProviderCoord(coord[0], coord[1]);
+                        bounds.minLat = Math.min(bounds.minLat, p[1]);
+                        bounds.maxLat = Math.max(bounds.maxLat, p[1]);
+                        bounds.minLng = Math.min(bounds.minLng, p[0]);
+                        bounds.maxLng = Math.max(bounds.maxLng, p[0]);
+                        return new TMap.LatLng(p[1], p[0]);
+                    });
+                    geometries.push({ id: 'ring' + index, styleId: 'region', paths: [path] });
+                });
+                if(!geometries.length){ return; }
+                polygonLayer = new TMap.MultiPolygon({
+                    map: instance,
+                    styles: {
+                        region: new TMap.PolygonStyle({
+                            color: 'rgba(128, 216, 255, 0.4)',
+                            showBorder: true, borderColor: '#0091ea', borderWidth: 1
+                        })
+                    },
+                    geometries: geometries
+                });
+                ringBounds = bounds;
+                this.fitAll();
+            },
+            clearBoundary: function(){
+                if(polygonLayer){ polygonLayer.setMap(null); polygonLayer = null; }
+                ringBounds = null;
+            },
+            fitAll: function(){
+                if(!ringBounds){ return; }
+                instance.fitBounds(new TMap.LatLngBounds(
+                    new TMap.LatLng(ringBounds.minLat, ringBounds.minLng),
+                    new TMap.LatLng(ringBounds.maxLat, ringBounds.maxLng)
+                ), { padding: 20 });
+            },
+            resize: function(){ /* TMap 自动跟随容器尺寸 */ }
+        };
+    }
+
+    /**
+     * 初始化地图：已配置厂商密钥时加载对应官方 JS API（异步），否则用 Leaflet 兜底
+     * @return {Boolean} 地图是否可用
+     */
     function initMap(){
+        if(MAP_PROVIDER){
+            // SDK 仍在异步加载时先触发初始化，就绪回调会补绘 currentRegion
+            if(!sdk){ initProviderMap(); }
+            return true;
+        }
+        return initLeafletMap();
+    }
+
+    /** 加载厂商 SDK 并创建适配器实例。 */
+    function initProviderMap(){
+        // 高德 2.0 要求 securityJsCode 在 SDK 加载前注入
+        Object.keys(MAP_CONFIG.security_config || {}).forEach(function(name){
+            window[name] = MAP_CONFIG.security_config[name];
+        });
+        // 百度 GL 引导脚本需 callback 参数才会以 appendChild 方式插入真正的 SDK
+        if(MAP_PROVIDER === 'baidu'){
+            window.__cmsproRegionBaiduReady = function(){};
+        }
+
+        var readyCheck = {
+            baidu:   function(){ return typeof window.BMapGL !== 'undefined'; },
+            amap:    function(){ return typeof window.AMap !== 'undefined'; },
+            tencent: function(){ return typeof window.TMap !== 'undefined'; }
+        };
+
+        loadSdk(MAP_CONFIG.sdk_url, readyCheck[MAP_PROVIDER], function(){
+            try{
+                sdk = MAP_PROVIDER === 'baidu' ? createBaiduSdk()
+                    : (MAP_PROVIDER === 'amap' ? createAmapSdk() : createTencentSdk());
+                sdk.init();
+                $('#mapLoadFail').hide();
+                $('#geoMapWrap').show();
+                // SDK 就绪前用户已选中区划时补绘
+                if(currentRegion){ showOnMap(currentRegion, currentFullPath); }
+            }catch(error){
+                sdk = null;
+                console.warn('[厂商地图] 初始化失败', error);
+                fallbackToLeaflet('地图渲染异常');
+            }
+        }, function(message){
+            sdk = null;
+            fallbackToLeaflet(message);
+        });
+    }
+
+    /**
+     * 初始化 Leaflet 兜底底图
+     * @return {Boolean} 地图是否可用
+     */
+    function initLeafletMap(){
         if(typeof L === 'undefined'){
             // CDN 加载失败：隐藏空地图容器，仅展示降级提示
             $('#geoMapWrap').hide();
@@ -454,6 +760,8 @@ layui.use(['layer', 'jquery'], function(){
             return false;
         }
         if(!map){
+            // 厂商 SDK 降级时容器可能已写入 DOM，Leaflet 要求容器为空
+            document.getElementById('geoMap').innerHTML = '';
             map = L.map('geoMap', { zoomControl: true }).setView([35.86166, 104.195397], 4);
             L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}', {
                 subdomains: ['1', '2', '3', '4'],
@@ -470,6 +778,10 @@ layui.use(['layer', 'jquery'], function(){
      */
     function clearBoundary(){
         boundarySeq++;
+        if(sdk){
+            sdk.clearBoundary();
+            return;
+        }
         if(boundaryLayer && map){
             map.removeLayer(boundaryLayer);
         }
@@ -481,7 +793,13 @@ layui.use(['layer', 'jquery'], function(){
      * 用于级联切换、或所选区划无坐标时复位
      */
     function resetMapView(){
+        currentRegion = null;
+        currentFullPath = '';
         clearBoundary();
+        if(sdk){
+            sdk.clearPoint();
+            return;
+        }
         if(marker && map){
             map.removeLayer(marker);
         }
@@ -513,7 +831,15 @@ layui.use(['layer', 'jquery'], function(){
                 return response.json();
             })
             .then(function(geojson){
-                if(seq !== boundarySeq || !map || !geojson){
+                if(seq !== boundarySeq || !geojson){
+                    return;
+                }
+                if(sdk){
+                    // 厂商模式：逐环绘制多边形，坐标由适配器内部按需转换
+                    sdk.drawRings(extractRings(geojson));
+                    return;
+                }
+                if(!map){
                     return;
                 }
                 boundaryLayer = L.geoJSON(geojson, {
@@ -537,9 +863,23 @@ layui.use(['layer', 'jquery'], function(){
      * @param {String} fullPath 完整路径，用于标记弹窗文案
      */
     function showOnMap(region, fullPath){
+        currentRegion = region;
+        currentFullPath = fullPath;
         if(!initMap()) return;
         var lat = parseFloat(region.lat);
         var lon = parseFloat(region.lon);
+
+        // 厂商模式：坐标转换后交给适配器；SDK 仍在加载时先记录，就绪回调会补绘
+        if(MAP_PROVIDER){
+            if(!sdk) return;
+            sdk.resize();
+            var point = toProviderCoord(lon, lat);
+            sdk.showPoint(point[0], point[1], fullPath);
+            drawBoundary(region.code, region.level);
+            return;
+        }
+
+        if(!map) return;
         // 左栏内容高度变化会带动地图容器尺寸变化，定位前先刷新一次
         map.invalidateSize();
         map.setView([lat, lon], 12, { animate: true });

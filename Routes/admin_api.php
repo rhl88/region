@@ -1,7 +1,11 @@
 <?php
 
 use App\Apps\CmsproRegion\Controllers\Admin\RegionController;
+use App\Apps\CmsproRegion\Controllers\Admin\SettingController;
 use Illuminate\Support\Facades\Route;
+
+// 应用设置（地图配置）保存
+Route::post('/setting', [SettingController::class, 'update']);
 
 // 快照导出（生产端：全量导出供上传版本服务器发布）
 Route::get('/export-snapshot', [RegionController::class, 'exportSnapshot']);
