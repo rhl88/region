@@ -184,6 +184,25 @@ class RegionDataSyncTest extends RegionTestCase
             ->assertJsonPath('data.local_version', '20261106001');
     }
 
+    /**
+     * 本地版本高于官方最新（本地先行修正场景）：
+     * 不提示更新（need_update=false），防止误点「在线同步」用官方旧包全量覆盖本地新数据。
+     */
+    public function test_检查更新_本地版本高于官方时提示无需更新(): void
+    {
+        $package = $this->buildRemotePackage($this->sampleRemoteRegions(), '20261106001');
+        $this->fakeVersionServer($package, '20261106001');
+        $this->seedSyncConfig('20261107002'); // 本地为更高的先行修正版本
+
+        $this->asAdmin()
+            ->getJson('/api/admin/cmspro/region/sync-check-update')
+            ->assertOk()
+            ->assertJsonPath('data.available', true)
+            ->assertJsonPath('data.need_update', false)
+            ->assertJsonPath('data.version', '20261106001')
+            ->assertJsonPath('data.local_version', '20261107002');
+    }
+
     public function test_同步_全量替换落库成功(): void
     {
         $this->seedLocalOldData();
@@ -292,6 +311,29 @@ class RegionDataSyncTest extends RegionTestCase
 
         // 未触发下载请求（fake 记录请求序列：只有 latest，没有 download）
         Http::assertSentCount(1);
+    }
+
+    /**
+     * 本地版本高于官方最新时拒绝自动同步（version=null）：
+     * 抛出异常提示显式指定版本，本地数据保持零影响；
+     * 显式指定版本号的历史回退不受此限（见下一条用例）。
+     */
+    public function test_同步_本地版本高于官方时拒绝自动同步(): void
+    {
+        $package = $this->buildRemotePackage($this->sampleRemoteRegions(), '20261106001');
+        $this->fakeVersionServer($package, '20261106001');
+        $this->seedLocalOldData();
+        $this->seedSyncConfig('20261107002'); // 本地为更高的先行修正版本
+
+        $this->asAdmin()
+            ->postJson('/api/admin/cmspro/region/sync-region-data', ['version' => null])
+            ->assertOk()
+            ->assertJsonPath('code', 1); // RuntimeException 被 catch 后以 code=1 返回
+
+        // 本地数据零影响（未发生回退下载与全量替换）
+        $this->assertSame(2, Region::count());
+        $this->assertDatabaseHas('app_cmspro_region_region', ['code' => '999000', 'name' => '旧省级']);
+        $this->assertDatabaseHas('app_cmspro_region_region', ['code' => '999001', 'name' => '旧市级']);
     }
 
     public function test_同步_指定历史版本回退(): void

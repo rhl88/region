@@ -1,6 +1,6 @@
 # CmsPro 中国行政区划应用扩展指南
 
-> 版本：1.9.0 | 更新日期：2026-11-07
+> 版本：1.10.0 | 更新日期：2026-11-07
 > 适用系统：CmsPro v5.0.0+
 > 应用ID：`cmspro.region`
 
@@ -703,7 +703,7 @@ $snapshot = $snapshotService->export('20261106001');
 | `regions.json` | 全量记录数组 `[{code, name, level, parent_code, status, lon, lat}, ...]`，按 level + code 排序（父级先于子级）；顶级记录 `parent_code` 为 `'0'`；status 0（禁用）与 1（启用）全量导出；无坐标记录 `lon`/`lat` 为 null |
 | `meta.json` | `{version, count, stats: {province, city, district, street, village}, generated_at（Y-m-d H:i:s）, format: "code,name,level,parent_code,status,lon,lat"}` |
 
-**导出规则**：库中须已有省级（level=1）数据；单次上限 60 万条（与版本服务器一致）；版本号仅允许字母/数字/点/下划线/连字符（≤32 位）；导出流式分块（1000 条/块）避免大库内存溢出；调用方负责下载后删除快照包文件。
+**导出规则**：库中须已有省级（level=1）数据；单次上限 70 万条（与版本服务器一致）；版本号仅允许字母/数字/点/下划线/连字符（≤32 位）；导出流式分块（1000 条/块）避免大库内存溢出；调用方负责下载后删除快照包文件。
 
 ### 4.18 RegionDataSyncService 在线同步官方数据与快照包导入服务
 
@@ -758,7 +758,7 @@ $progress = $syncService->getProgress('sync_xxx');
 | ① 检查更新 | `GET {apps.market.api_url}/api/versionsvr/region-data/latest`；本地已是最新且未指定版本时跳过下载 |
 | ② 下载校验 | 下载 `region-data/download/{version}`，SHA-256 与版本服务器声明值比对，不符拒绝 |
 | ③ 解包 | 防 Zip Slip，兼容包内多一层包裹目录，读 regions.json |
-| ④ 契约校验 | 与导出端/版本服务器同一套规则（必填/code 唯一≤12 位/level 1-5/parent 引用闭环/省级必含/上限 60 万），**流式执行**：校验结果写 JSONL 中间产物，**进事务前执行**，非法数据直接拒绝 |
+| ④ 契约校验 | 与导出端/版本服务器同一套规则（必填/code 唯一≤12 位/level 1-5/parent 引用闭环/省级必含/上限 70 万），**流式执行**：校验结果写 JSONL 中间产物，**进事务前执行**，非法数据直接拒绝 |
 | ⑤ 单事务落库 | 全删（DELETE，MySQL 下 TRUNCATE 会隐式提交）→ 按 level 分层多遍扫描 JSONL 批量插入（2000 条/批，parent_code → parent_id，父级先于子级，层间 code 映射 `chunkById` 流式收集）→ 闭包表 SQL 化重建（`INSERT...SELECT` 逐层展开祖先链）→ 事务提交 |
 | ⑥ 后处理 | 清缓存（`RegionService::clearCache()`）→ 记版本（配置项 `app_cmspro_region_data_sync_version`；配置组「数据同步设置」由框架在应用安装/升级时落库，**组缺失时 `firstOrCreate` 自愈创建**，确保版本号一定写入）→ 清理旧包（保留最近 3 个） |
 
@@ -766,6 +766,33 @@ $progress = $syncService->getProgress('sync_xxx');
 
 - 四级数据包（sqlite 内存库实测，49334 条四级区划 + 19.3 万条闭包记录）：契约校验 0.73s + 全量替换落库 5.11s ≈ **5.84s**。
 - 五级村级数据包（MySQL 8 实测，584,265 条 + 284 万条闭包记录）：全链路流式化，512M 内存限制下**内存峰值仅 86MB**；流式校验约 3 分钟 + 插入 58 万条约 4 分钟 + 闭包重建约 1 分钟（SQL 化后 58 万节点），五级全量同步耗时约 10 分钟量级，建议低峰期执行。
+
+### 4.19 MapSettingService（地图配置解析）
+
+独立于 `RegionService` 的地图配置服务（`Services/MapSettingService.php`，单例），为数据演示页解析「当前该用哪家地图、用哪个前端密钥、加载哪个官方 SDK」，并支持关联「地图」应用（CmsproMaps）复用其配置。
+
+**配置来源**（配置项 `map_source`）：
+
+| 取值 | 行为 |
+|------|------|
+| `none`（默认） | 不启用厂商地图，演示页使用 Leaflet + 高德瓦片底图 |
+| `own` | 使用本应用「应用设置」页填写的厂商（`map_provider`）与前端密钥 |
+| `maps` | 跟随 CmsproMaps 的 `provider` 与对应前端密钥；该应用未安装（`function_exists('cmspro_maps_config')` 为 false）或未配置时视为未配置，自动回退瓦片底图 |
+
+**核心方法**：
+
+| 方法 | 说明 |
+|------|------|
+| `get($key, $default)` | 读配置（敏感项自动解密，库中无记录时回退 `Config/region.php`），缓存键前缀 `cmspro_region:map_config:`、TTL 3600 秒 |
+| `set(array $values)` | 按 `ALLOWED_KEYS` 白名单写入，密钥用 `Crypt::encryptString` 加密；**配置组缺失时抛 `RuntimeException`**，避免产生 `group_id=0` 的孤儿记录 |
+| `resolveEffective()` | 返回 `configured/source/provider/key/sdk_url/coordinate_system/security_config/message`，**只含前端可用字段**，服务端密钥绝不输出 |
+| `sdkUrl($provider, $key)` | 三家官方 JS API 地址（腾讯 `map.qq.com/api/gljs`、高德 `webapi.amap.com/maps`、百度 `api.map.baidu.com/api`）；百度固定带 `callback`，否则官方引导脚本走 `document.write` 被动态加载忽略 |
+| `coordinateSystem($provider)` | 百度为 `bd09`，腾讯/高德为 `gcj02`（库内坐标统一 GCJ-02） |
+| `configGroupReady()` / `mapsAppStatus()` | 供设置页判断是否展示「配置组未注册」提示、展示关联结果 |
+
+**其他应用如需读取本应用地图配置**：`app(MapSettingService::class)->resolveEffective()`；仅当 `configured === true` 时 `sdk_url`、`key` 才有值。
+
+> 配置组 `app_cmspro_region_map_settings` 由框架在安装/升级应用时按 `manifest.json` 写入。**从 v1.5.0 及更早版本升级的站点，须先在「应用管理」升级到应用 v1.6.0**，否则设置页提示升级，点击「保存设置」时由保存接口返回同一原因。
 
 ***
 
@@ -986,3 +1013,4 @@ ORDER BY c.depth DESC;
 | 1.7.2 | 2026-11-06 | 开发团队 | 在线同步体验修复（4.18 节，应用版本不变）：① `saveVersion()` 配置组缺失时 `firstOrCreate` 自愈建组，修复已同步但前端仍显示「未同步」；② 新增进度上报机制——`withProgressToken()` 链式设置令牌后 sync 各阶段经 Cache 写进度（生产 redis 跨进程共享），`getProgress()` 供 `GET sync-progress` 轮询，前端实时进度条替代静态提示；控制器长任务前 `session()->save()` 释放 session 锁避免轮询阻塞 |
 | 1.8.0 | 2026-11-06 | 开发团队 | 新增 `importFromSnapshot()` 快照包导入（4.18 节，站点间分享）：接收上传 ZIP（`POST import-snapshot`，zip ≤50MB），复用在线同步的解包（防 Zip Slip）/契约校验/单事务全量替换落库/进度上报链路；版本号取包内 meta.json（缺失回退 `snapshot-{YmdHis}`）；不做 SHA-256 校验（上传包无可信校验和来源），注意事项新增第 15 条「导入快照包为不可信上传」 |
 | 1.9.0 | 2026-11-07 | 开发团队 | 新增**行政村/社区五级数据**（应用 v1.5.0）：① code 字段扩容迁移 varchar(9)→varchar(12)；② 导出/导入/在线同步契约支持五级（level 1-5、code ≤12 位、上限放宽至 60 万条、stats 增 village，与版本服务器同步）；③ 同步链路流式化——数据包解包转存 regions.json、契约校验流式写 JSONL 中间产物、按层级分遍扫描批量插入（2000 条/批）、层间 code 映射 `chunkById` 流式收集，58.4 万条五级全量同步内存峰值 86MB（512M 限制，MySQL 实测）；④ 闭包表重建 SQL 化（`INSERT...SELECT` 逐层展开，58 万节点约 31 分钟 → 约 1 分钟）；⑤ `clearCache()` 版本号命名空间失效（七、缓存说明），children/path 动态缓存键带版本号、旧键由 TTL 自然过期 |
+| 1.10.0 | 2026-11-07 | 开发团队 | 新增 `MapSettingService` 地图配置服务（4.19 节）与后台「应用设置」页（`/admin/cmspro/region/setting`，权限 `cmspro.region.setting.manage`）：三种配置来源 `none`/`own`/`maps`（可关联 CmsproMaps 复用其 `provider` 与前端密钥），四项前端密钥 `Crypt` 加密落库，manifest 新增配置组 `map_settings`；数据演示页地图层重构为厂商适配器（百度 BMapGL / 高德 AMap 2.0 / 腾讯 TMap GL），坐标系按厂商转换、SDK 加载失败自动回退 Leaflet + 高德瓦片（对应应用 v1.6.0） |

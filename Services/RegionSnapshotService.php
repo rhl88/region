@@ -25,8 +25,8 @@ class RegionSnapshotService
 
     public const META_FILE = 'meta.json';
 
-    /** 单次导出最大记录数（与版本服务器 60 万上限一致，含村级约 59 万条） */
-    private const MAX_REGIONS = 600000;
+    /** 单次导出最大记录数（与版本服务器 70 万上限一致，五级全量约 64 万条） */
+    private const MAX_REGIONS = 700000;
 
     /** 流式读取分块大小 */
     private const CHUNK_SIZE = 1000;

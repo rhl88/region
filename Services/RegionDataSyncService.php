@@ -45,8 +45,8 @@ class RegionDataSyncService
 
     private const META_FILE = 'meta.json';
 
-    /** 单次同步最大区划记录数（与版本服务器 60 万上限一致，含村级约 59 万条） */
-    private const MAX_REGIONS = 600000;
+    /** 单次同步最大区划记录数（与版本服务器 70 万上限一致，五级全量约 64 万条） */
+    private const MAX_REGIONS = 700000;
 
     /** 区划编码最大长度（12 位村级编码） */
     private const MAX_CODE_LENGTH = 12;
@@ -160,9 +160,15 @@ class RegionDataSyncService
             $data = $payload['data'];
             $version = (string) ($data['version'] ?? '');
 
+            // 官方版本须高于本地版本才提示更新：本地为先行修正版（高于官方）时
+            // 拒绝提示更新，防止误点「在线同步」用官方旧包全量覆盖本地新数据
+            $outdated = $version !== '' && $localVersion !== '' && strcmp($version, $localVersion) < 0;
+
             return array_merge($base, [
                 'available' => true,
-                'message' => 'ok',
+                'message' => $outdated
+                    ? '本地版本 ' . $localVersion . ' 已高于官方最新版本 ' . $version . '，无需同步'
+                    : 'ok',
                 'version' => $version,
                 'region_count' => (int) ($data['region_count'] ?? 0),
                 'stats' => (array) ($data['stats'] ?? []),
@@ -170,7 +176,7 @@ class RegionDataSyncService
                 'file_size' => (int) ($data['file_size'] ?? 0),
                 'checksum' => (string) ($data['checksum'] ?? ''),
                 'release_time' => (string) ($data['release_time'] ?? ''),
-                'need_update' => $version !== '' && $version !== $localVersion,
+                'need_update' => ! $outdated && $version !== '' && $version !== $localVersion,
             ]);
         } catch (Throwable $e) {
             Log::warning('[cmspro.region] 区划数据版本检查失败', ['error' => $e->getMessage()]);
@@ -207,6 +213,16 @@ class RegionDataSyncService
                 'stats' => [],
                 'duration' => 0,
             ];
+        }
+
+        // 官方最新版本低于本地版本时拒绝自动同步：防止本地先行修正的数据被官方旧包全量回退
+        // （显式指定版本号的历史回退不受此限）
+        if ($requested === '' && $info['version'] !== '' && $info['local_version'] !== ''
+            && strcmp($info['version'], $info['local_version']) < 0) {
+            throw new RuntimeException(
+                '本地版本 ' . $info['local_version'] . ' 已高于官方最新版本 ' . $info['version']
+                . '，自动同步会将本地数据回退为官方旧版；如确认需要回退，请显式指定版本号'
+            );
         }
 
         // 最新版本才有 latest 接口声明的校验和；指定历史版本时跳过校验和比对

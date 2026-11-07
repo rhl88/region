@@ -1,7 +1,7 @@
 # CmsPro-中国行政区划-特性清单
 
-> 版本：1.9.0 | 更新日期：2026-11-07
-> 应用版本：1.5.0 | 应用 ID：cmspro.region
+> 版本：1.10.0 | 更新日期：2026-11-07
+> 应用版本：1.6.0 | 应用 ID：cmspro.region
 
 ---
 
@@ -60,6 +60,11 @@
 | `cache_ttl` | 86400 | 缓存时间（秒） |
 | `cache_prefix` | region | 缓存键前缀 |
 | `default_max_level` | 3 | 默认最大层级 |
+| `map_source` | none | 地图配置来源：none（Leaflet + 高德瓦片）/ own（本应用独立配置）/ maps（关联「地图」应用） |
+| `map_provider` | baidu | 地图厂商：baidu / amap / tencent |
+| `tencent_js_key`、`amap_js_key`、`amap_security_code`、`baidu_js_ak` | 空 | 三家厂商前端密钥，`Crypt` 加密落库，本应用不内置任何密钥 |
+
+> 地图配置对应 `manifest.json` 的配置组 `map_settings`（框架生成 code `app_cmspro_region_map_settings`），在「应用设置」页维护；配置组由框架在安装/升级时写入，**旧版本站点需先升级到应用 v1.6.0** 才能保存。
 
 ## 七、权限系统
 
@@ -68,6 +73,7 @@
 | `cmspro.region.manage` | 区划管理 | 数据管理基础权限 |
 | `cmspro.region.import` | 数据导入 | 数据导入权限 |
 | `cmspro.region.export` | 数据导出 | 导出全量数据快照包权限 |
+| `cmspro.region.setting.manage` | 应用设置管理 | 地图配置查看与保存权限 |
 
 ## 八、安装卸载升级
 
@@ -83,7 +89,7 @@
 
 | 视图目录 | 说明 |
 |----------|------|
-| `Views/Admin/` | 后台数据管理页（`index.blade.php`）、数据演示页（`demo.blade.php`） |
+| `Views/Admin/` | 后台数据管理页（`index.blade.php`）、数据演示页（`demo.blade.php`）、应用设置页（`setting.blade.php`） |
 
 遵循 CmsPro 应用视图规范（Layui 后台模板）。
 
@@ -93,6 +99,7 @@
 |------|------|------|
 | 数据管理 | `/admin/cmspro/region` | 后台 |
 | 数据演示 | `/admin/cmspro/region/demo` | 后台 |
+| 应用设置 | `/admin/cmspro/region/setting` | 后台 |
 
 ## 十一、版本历史
 
@@ -108,3 +115,5 @@
 | 1.7.0 | 2026-11-06 | 开发团队 | 新增「在线同步官方数据」（消费端）：`RegionDataSyncService` + 「在线同步官方数据」按钮 + `GET sync-check-update` / `POST sync-region-data` 接口；同步链路：检查更新（版本服务器 `region-data/latest`）→ 下载 SHA-256 校验（`region-data/download/{version}`）→ 解包（防 Zip Slip）→ 契约校验 → 单事务全量替换落库（全删 → 按 level 分层 chunk(500) 批量插入、parent_code→parent_id、闭包表重建）→ 清缓存 → 记版本（配置组「数据同步设置」+ 配置项 `app_cmspro_region_data_sync_version`）；五重安全网（校验和/前置契约/事务回滚/版本回退/重复跳过）；站点初始化从约 1 小时降至 1 分钟内（49334 条实测校验+落库 5.84s）（对应应用 v1.3.0） |
 | 1.8.0 | 2026-11-06 | 开发团队 | 新增「导入快照包」（站点间分享）：`RegionDataSyncService::importFromSnapshot()` + 「导入快照包」按钮 + `POST /api/admin/cmspro/region/import-snapshot` 接口（zip ≤50MB）；接收其他站点「导出快照包」生成的 ZIP 直接上传导入，复用同一套契约校验（防 Zip Slip/必填/code 唯一/引用闭环/省级必含）与单事务全量替换落库链路（parent_code→parent_id、闭包表重建）及进度轮询机制；版本号取包内 meta.json（缺失回退 `snapshot-{YmdHis}`）；因上传包无可信校验和来源不做 SHA-256 校验，仅限管理员导入可信站点的包（对应应用 v1.4.0） |
 | 1.9.0 | 2026-11-07 | 开发团队 | 新增**行政村/社区五级数据**（对应应用 v1.5.0）：① code 字段扩容迁移 varchar(9)→varchar(12)，支持村级 12 位编码；② 导出/导入/在线同步契约支持五级（level 1-5、code ≤12 位、上限放宽至 60 万条、stats 增 village，与版本服务器同步）；③ 同步链路流式化——解包转存 regions.json、契约校验流式写 JSONL 中间产物、按层级分遍扫描批量插入（2000 条/批）、层间 code 映射 `chunkById` 流式收集，58.4 万条五级全量同步（省 34/市 333/区县 2,872/街道 38,598/村 542,428）内存峰值 86MB（512M 限制，MySQL 实测）；④ 闭包表重建 SQL 化（`INSERT...SELECT` 逐层展开，58 万节点约 31 分钟 → 约 1 分钟）；⑤ `clearCache()` 版本号命名空间失效（O(1)）：children/path 动态缓存键带版本号，旧键由 TTL 自然过期；⑥ 数据管理页与数据演示页新增村级统计与级联选择 |
+| 1.10.0 | 2026-11-07 | 开发团队 | 新增**应用设置（地图配置）**（对应应用 v1.6.0）：① 新增后台菜单「应用设置」（`/admin/cmspro/region/setting`）、权限 `cmspro.region.setting.manage`、`SettingController`（index/update）与 `setting.blade.php`；② 新增 `MapSettingService`（单例）解析生效地图配置，三种来源——`none`（默认，Leaflet + 高德瓦片）/ `own`（本应用独立配置厂商与密钥）/ `maps`（跟随 CmsproMaps 的 `provider` 与前端密钥，未安装或未配置时自动回退）；③ manifest 新增配置组 `map_settings`（6 项，密钥类 `type=password`），四项前端密钥 `Crypt` 加密落库、缓存 TTL 3600 秒，配置组未注册时拒绝写入并提示先升级应用；④ 数据演示页地图层重构为厂商适配器（百度 BMapGL / 高德 AMap 2.0 / 腾讯 TMap GL），统一接口 `init/showPoint/clearPoint/drawRings/clearBoundary/fitAll/resize`，坐标系按厂商转换（库内 GCJ-02，百度转 BD-09），SDK 加载失败自动回退 Leaflet 并补绘边界；⑤「更新坐标」开发模式 AK 优先取本应用生效配置、回退「地图」应用。新增测试 `Tests/Feature/MapSettingTest.php`（22 项），应用测试 81 passed / 439 assertions |
+| 1.10.1 | 2026-11-07 | 开发团队 | 新增**同步版本回退保护** + 单次记录数上限 60 万 → 70 万（应用版本不变）：① `checkUpdate` 在官方最新版本低于本地版本时返回 `need_update=false`（message 说明本地版本已高于官方），`sync` 不带 `version` 参数时拒绝自动同步——防止本地先行修正数据被官方旧包全量回退，显式指定版本号的历史回退不受限；`RegionDataSyncTest` 增补 2 项防回归用例（93 passed / 484 assertions）；② `MAX_REGIONS` 600,000 → 700,000（`RegionDataSyncService` 与版本服务器 `Versionsvr\RegionDataService` 同步放宽）——数据版本 `20261107002` 总量 638,772 条（省 34/市 333/区县 2,872/街道 38,717/村 596,814）超原 60 万上限，不放宽则各站点同步该校验直接失败 |
