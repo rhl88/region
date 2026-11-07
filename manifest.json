@@ -1,8 +1,8 @@
 {
     "id": "cmspro.region",
     "name": "中国行政区划",
-    "description": "中国行政区划数据服务，支持省、市、区县三级联动及街道四级可选，提供API供其他应用调用",
-    "version": "1.4.0",
+    "description": "中国行政区划数据服务，支持省、市、区县三级联动及街道四级、村/社区五级可选，提供API供其他应用调用",
+    "version": "1.6.0",
     "author": "CmsPro",
     "icon": "fa fa-map-marker",
     "require": {
@@ -35,6 +35,13 @@
                     "path": "/admin/cmspro/region/demo",
                     "code": "admin_cmspro_region_demo",
                     "order": 2
+                },
+                {
+                    "title": "应用设置",
+                    "icon": "fa fa-cog",
+                    "path": "/admin/cmspro/region/setting",
+                    "code": "admin_cmspro_region_setting",
+                    "order": 3
                 }
             ]
         }
@@ -51,6 +58,10 @@
         {
             "code": "cmspro.region.export",
             "name": "数据导出"
+        },
+        {
+            "code": "cmspro.region.setting.manage",
+            "name": "应用设置管理"
         }
     ],
     "config_groups": [
@@ -64,6 +75,54 @@
                     "type": "text",
                     "value": "",
                     "tips": "最近一次在线同步的官方区划数据版本号（系统自动维护，请勿手工修改）"
+                }
+            ]
+        },
+        {
+            "name": "map_settings",
+            "title": "地图设置",
+            "items": [
+                {
+                    "name": "map_source",
+                    "title": "地图配置来源",
+                    "type": "text",
+                    "value": "none",
+                    "tips": "none=不启用厂商地图，数据演示页使用 Leaflet + 高德瓦片底图；own=使用本应用下方独立配置的厂商与密钥；maps=跟随「地图」应用（CmsproMaps）的厂商与前端密钥。"
+                },
+                {
+                    "name": "map_provider",
+                    "title": "地图厂商",
+                    "type": "text",
+                    "value": "baidu",
+                    "tips": "仅在配置来源为「独立配置」时生效，可选 tencent（腾讯地图）、amap（高德地图）、baidu（百度地图）。"
+                },
+                {
+                    "name": "tencent_js_key",
+                    "title": "腾讯地图 JS API Key",
+                    "type": "password",
+                    "value": "",
+                    "tips": "请到腾讯位置服务开放平台（lbs.qq.com）自行申请密钥；创建 Key 时勾选「Web端 JavaScript GL」，并在控制台配置 Referer 域名白名单。本应用不内置任何密钥。"
+                },
+                {
+                    "name": "amap_js_key",
+                    "title": "高德地图 JS API Key",
+                    "type": "password",
+                    "value": "",
+                    "tips": "请到高德开放平台（lbs.amap.com）自行申请密钥；应用类型须选择「Web端(JS API)」，并在控制台配置域名白名单。本应用不内置任何密钥。"
+                },
+                {
+                    "name": "amap_security_code",
+                    "title": "高德安全密钥 securityJsCode",
+                    "type": "password",
+                    "value": "",
+                    "tips": "高德 JS API 2.0 自 2021-12-02 起强制要求安全密钥，不填将报 INVALID_USER_SCODE。"
+                },
+                {
+                    "name": "baidu_js_ak",
+                    "title": "百度地图 JS API AK",
+                    "type": "password",
+                    "value": "",
+                    "tips": "请到百度地图开放平台（lbsyun.baidu.com）自行申请密钥；应用类型须选择「浏览器端」并开启 JavaScript GL，同时在控制台配置 Referer 白名单。本应用不内置任何密钥。"
                 }
             ]
         }

@@ -15,9 +15,9 @@ return new class extends Migration
 
         Schema::create('app_cmspro_region_region', function (Blueprint $table) {
             $table->bigIncrements('id')->comment('主键ID');
-            $table->string('code', 9)->comment('行政区划代码，如110000、110101、110101001');
+            $table->string('code', 12)->comment('行政区划代码，如110000、110101、110101001、110101001234');
             $table->string('name', 50)->comment('区划名称，如北京市、东城区');
-            $table->unsignedTinyInteger('level')->default(1)->comment('层级：1-省 2-市 3-区县 4-街道/乡镇');
+            $table->unsignedTinyInteger('level')->default(1)->comment('层级：1-省 2-市 3-区县 4-街道/乡镇 5-村/社区');
             $table->unsignedBigInteger('parent_id')->default(0)->comment('父级ID，顶级为0');
             $table->unsignedTinyInteger('status')->default(1)->comment('状态：0-禁用 1-启用');
             $table->timestamp('create_time')->nullable()->comment('创建时间');

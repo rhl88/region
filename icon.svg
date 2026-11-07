@@ -1,3 +1,91 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
-  <path d="M60 10C42.3 10 28 24.3 28 42c0 22.5 32 68 32 68s32-45.5 32-68C92 24.3 77.7 10 60 10zm0 46c-7.7 0-14-6.3-14-14s6.3-14 14-14 14 6.3 14 14-6.3 14-14 14z" fill="#2563eb"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120"
+     role="img" aria-labelledby="rgTitle rgDesc">
+  <title id="rgTitle">中国行政区划</title>
+  <desc id="rgDesc">行政区划数据服务：品牌蓝圆角底板上的白色定位标记，衬以地图经纬弧线，寓意省、市、区县三级区划的定位与层级管理。</desc>
+
+  <defs>
+    <!-- 底板：左上亮蓝 → 右下深蓝 -->
+    <linearGradient id="rgBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5B93FF"/>
+      <stop offset="0.46" stop-color="#2A6CEF"/>
+      <stop offset="1" stop-color="#142E8A"/>
+    </linearGradient>
+
+    <!-- 顶部柔光 -->
+    <radialGradient id="rgGloss" cx="0.34" cy="0" r="0.84">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.26"/>
+      <stop offset="0.48" stop-color="#FFFFFF" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- 标记主体：垂直渐变，顶端纯白、针尖转冷蓝，制造厚度 -->
+    <linearGradient id="rgMark" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.34" stop-color="#FBFDFF"/>
+      <stop offset="0.72" stop-color="#E4EEFF"/>
+      <stop offset="1" stop-color="#BCD2FA"/>
+    </linearGradient>
+
+    <!-- 标记左缘高光：偏左的横向渐变，只提亮左侧受光面 -->
+    <linearGradient id="rgLight" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.85"/>
+      <stop offset="0.45" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- 镂空中心孔：上沿深、下沿略亮，形成内凹 -->
+    <linearGradient id="rgCore" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0" stop-color="#12359C"/>
+      <stop offset="0.7" stop-color="#2559D8"/>
+      <stop offset="1" stop-color="#3574F2"/>
+    </linearGradient>
+
+    <!-- 底板圆角裁切，承载柔光与经纬纹理 -->
+    <clipPath id="rgClip">
+      <rect width="120" height="120" rx="30"/>
+    </clipPath>
+
+    <filter id="rgShadow" x="-45%" y="-35%" width="190%" height="190%">
+      <feDropShadow dx="0" dy="3.2" stdDeviation="4.4" flood-color="#071A55" flood-opacity="0.42"/>
+    </filter>
+  </defs>
+
+  <g clip-path="url(#rgClip)">
+    <!-- 底板 -->
+    <rect width="120" height="120" fill="url(#rgBg)"/>
+
+    <!-- 地图经纬弧线：白色细线，透明度控制在“可感知但不抢主体” -->
+    <g fill="none" stroke="#FFFFFF" stroke-opacity="0.30" stroke-width="1.2">
+      <circle cx="110" cy="-4" r="38"/>
+      <circle cx="110" cy="-4" r="56"/>
+      <path d="M-10 86 C20 70 54 74 92 94"/>
+    </g>
+
+    <!-- 顶部柔光 -->
+    <rect width="120" height="120" fill="url(#rgGloss)"/>
+
+    <!-- 定位标记：圆心 (60,45) r=25，针尖 (60,100)，侧边曲线与上半圆 G1 连续 -->
+    <g filter="url(#rgShadow)">
+      <path d="M60 100 C60 92 35 69 35 45 A25 25 0 0 1 85 45 C85 69 60 92 60 100 Z"
+            fill="url(#rgMark)"/>
+    </g>
+
+    <!-- 标记内受光面：与标记同形，叠一层左亮右透的横向渐变 -->
+    <path d="M60 100 C60 92 35 69 35 45 A25 25 0 0 1 85 45 C85 69 60 92 60 100 Z"
+          fill="url(#rgLight)"/>
+
+    <!-- 镂空中心孔 -->
+    <circle cx="60" cy="45" r="10" fill="url(#rgCore)"/>
+
+    <!-- 孔沿内阴影：上沿一道暗弧，强化凹陷 -->
+    <path d="M50.6 44 A10 10 0 0 1 69.4 44" fill="none"
+          stroke="#071C5E" stroke-opacity="0.34" stroke-width="2" stroke-linecap="round"/>
+
+    <!-- 孔内下沿反光 -->
+    <path d="M51.6 49.4 A10 10 0 0 0 68.4 49.4" fill="none"
+          stroke="#A9C6FF" stroke-opacity="0.55" stroke-width="1.3" stroke-linecap="round"/>
+
+    <!-- 内描边：收紧边缘，提升精致度 -->
+    <rect x="0.9" y="0.9" width="118.2" height="118.2" rx="29.1"
+          fill="none" stroke="#FFFFFF" stroke-opacity="0.22" stroke-width="1.8"/>
+  </g>
 </svg>

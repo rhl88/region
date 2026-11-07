@@ -15,7 +15,7 @@ use ZipArchive;
  *
  * 导出契约与版本服务器校验规则（Versionsvr RegionDataService::validateRegions）完全对齐：
  * - regions.json：[{code, name, level, parent_code, status, lon, lat}, ...]，按 level + code 排序
- * - meta.json：{version, count, stats:{province,city,district,street}, generated_at, format}
+ * - meta.json：{version, count, stats:{province,city,district,street,village}, generated_at, format}
  * - 顶级记录 parent_code 固定为 '0'；status 0/1 均导出；无坐标记录 lon/lat 为 null
  */
 class RegionSnapshotService
@@ -25,8 +25,8 @@ class RegionSnapshotService
 
     public const META_FILE = 'meta.json';
 
-    /** 单次导出最大记录数（与版本服务器 20 万上限一致） */
-    private const MAX_REGIONS = 200000;
+    /** 单次导出最大记录数（与版本服务器 60 万上限一致，含村级约 59 万条） */
+    private const MAX_REGIONS = 600000;
 
     /** 流式读取分块大小 */
     private const CHUNK_SIZE = 1000;
@@ -103,6 +103,7 @@ class RegionSnapshotService
             Region::LEVEL_CITY => 'city',
             Region::LEVEL_DISTRICT => 'district',
             Region::LEVEL_STREET => 'street',
+            Region::LEVEL_VILLAGE => 'village',
         ];
 
         $handle = fopen($regionsFile, 'wb');
@@ -120,7 +121,7 @@ class RegionSnapshotService
                 ->orderBy('code')
                 ->chunk(self::CHUNK_SIZE, function ($regions) use ($handle, $codeMap, $levelKeys, &$count): bool {
                     foreach ($regions as $region) {
-                        // 数据完整性防御：level 必须为 1-4
+                        // 数据完整性防御：level 必须为 1-5
                         if (! isset($levelKeys[$region->level])) {
                             throw new RuntimeException('区划 ' . $region->code . ' 的 level 非法：' . $region->level . '，请先修复数据');
                         }
@@ -169,7 +170,7 @@ class RegionSnapshotService
     }
 
     /**
-     * 统计四级数量。
+     * 统计五级数量。
      *
      * @return array<string,int>
      */
@@ -186,6 +187,7 @@ class RegionSnapshotService
             'city' => (int) ($stats[Region::LEVEL_CITY] ?? 0),
             'district' => (int) ($stats[Region::LEVEL_DISTRICT] ?? 0),
             'street' => (int) ($stats[Region::LEVEL_STREET] ?? 0),
+            'village' => (int) ($stats[Region::LEVEL_VILLAGE] ?? 0),
         ];
     }
 

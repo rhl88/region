@@ -203,7 +203,7 @@ class SnapshotExportTest extends RegionTestCase
         $this->assertSame('20261106001', $meta['version']);
         $this->assertSame(5, $meta['count']);
         $this->assertSame(
-            ['province' => 2, 'city' => 1, 'district' => 1, 'street' => 1],
+            ['province' => 2, 'city' => 1, 'district' => 1, 'street' => 1, 'village' => 0],
             $meta['stats']
         );
         // 日期时间统一 Y-m-d H:i:s 格式
@@ -280,7 +280,7 @@ class SnapshotExportTest extends RegionTestCase
 
         $this->assertSame(5, $validated['count']);
         $this->assertSame(
-            ['province' => 2, 'city' => 1, 'district' => 1, 'street' => 1],
+            ['province' => 2, 'city' => 1, 'district' => 1, 'street' => 1, 'village' => 0],
             $validated['stats']
         );
 

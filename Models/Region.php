@@ -41,6 +41,7 @@ class Region extends Model
     public const LEVEL_CITY = 2;
     public const LEVEL_DISTRICT = 3;
     public const LEVEL_STREET = 4;
+    public const LEVEL_VILLAGE = 5;
 
     /**
      * 层级名称映射
@@ -50,6 +51,7 @@ class Region extends Model
         self::LEVEL_CITY => '市',
         self::LEVEL_DISTRICT => '区/县',
         self::LEVEL_STREET => '街道/乡镇',
+        self::LEVEL_VILLAGE => '村/社区',
     ];
 
     /**

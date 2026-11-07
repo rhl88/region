@@ -45,14 +45,17 @@ class RegionDataSyncService
 
     private const META_FILE = 'meta.json';
 
-    /** 单次同步最大区划记录数（与版本服务器 20 万上限一致） */
-    private const MAX_REGIONS = 200000;
+    /** 单次同步最大区划记录数（与版本服务器 60 万上限一致，含村级约 59 万条） */
+    private const MAX_REGIONS = 600000;
 
-    /** 区划编码最大长度（9 位街道级编码） */
-    private const MAX_CODE_LENGTH = 9;
+    /** 区划编码最大长度（12 位村级编码） */
+    private const MAX_CODE_LENGTH = 12;
 
-    /** 分层批量插入分块大小 */
-    private const CHUNK_SIZE = 500;
+    /** 分层批量插入分块大小（单行 10 参数 × 2000 = 2 万，低于 PDO 6.5 万参数上限） */
+    private const CHUNK_SIZE = 2000;
+
+    /** 流式读取块大小（1MB：fread 次数与常驻内存的平衡点） */
+    private const READ_CHUNK_SIZE = 1048576;
 
     /** 本地保留最近下载数（与清理策略一致） */
     private const KEEP_PACKS = 3;
@@ -235,13 +238,26 @@ class RegionDataSyncService
             $this->reportProgress('running', 30, '正在解包并校验数据契约...');
 
             $package = $this->readPackageFromZip($zipPath);
-            $validated = $this->validateRegions($package['regions']);
+            $jsonlFile = null;
 
-            $this->reportProgress('running', 45, '数据校验通过，共 ' . $validated['count'] . ' 条，正在全量替换落库...');
+            try {
+                // 流式校验：逐条扫描写 JSONL 临时文件，不整体载入内存
+                // （村级数据 58 万条 / 67MB 全量解码会耗尽 512M memory_limit）
+                $validated = $this->validateRegionsFromFile($package['regions_file']);
+                $jsonlFile = $validated['jsonl_file'];
 
-            $startTime = microtime(true);
-            $this->importRegions($validated['regions']);
-            $duration = round(microtime(true) - $startTime, 2);
+                $this->reportProgress('running', 45, '数据校验通过，共 ' . $validated['count'] . ' 条，正在全量替换落库...');
+
+                $startTime = microtime(true);
+                $this->importRegions($jsonlFile, (int) ceil($validated['stats']['village'] / self::CHUNK_SIZE));
+                $duration = round(microtime(true) - $startTime, 2);
+            } finally {
+                // regions.json 转存文件与校验产出的 JSONL 均为大体积临时文件（67MB 级），处理后立即清理
+                @unlink($package['regions_file']);
+                if ($jsonlFile !== null) {
+                    @unlink($jsonlFile);
+                }
+            }
 
             $this->reportProgress('running', 90, '落库完成，正在清除缓存并记录版本...');
 
@@ -298,18 +314,31 @@ class RegionDataSyncService
             $this->reportProgress('running', 25, '正在解包并校验快照包...');
 
             $package = $this->readPackageFromZip($zipPath);
-            $validated = $this->validateRegions($package['regions']);
+            $jsonlFile = null;
 
-            // 版本号：优先包内 meta.json 声明值；缺失（手工打包）时按导入时刻回退
-            $version = $package['meta_version'] !== ''
-                ? $package['meta_version']
-                : 'snapshot-' . date('YmdHis');
+            try {
+                // 流式校验：逐条扫描写 JSONL 临时文件，不整体载入内存
+                // （村级数据 58 万条 / 67MB 全量解码会耗尽 512M memory_limit）
+                $validated = $this->validateRegionsFromFile($package['regions_file']);
+                $jsonlFile = $validated['jsonl_file'];
 
-            $this->reportProgress('running', 45, '快照包校验通过，共 ' . $validated['count'] . ' 条，正在全量替换落库...');
+                // 版本号：优先包内 meta.json 声明值；缺失（手工打包）时按导入时刻回退
+                $version = $package['meta_version'] !== ''
+                    ? $package['meta_version']
+                    : 'snapshot-' . date('YmdHis');
 
-            $startTime = microtime(true);
-            $this->importRegions($validated['regions']);
-            $duration = round(microtime(true) - $startTime, 2);
+                $this->reportProgress('running', 45, '快照包校验通过，共 ' . $validated['count'] . ' 条，正在全量替换落库...');
+
+                $startTime = microtime(true);
+                $this->importRegions($jsonlFile, (int) ceil($validated['stats']['village'] / self::CHUNK_SIZE));
+                $duration = round(microtime(true) - $startTime, 2);
+            } finally {
+                // regions.json 转存文件与校验产出的 JSONL 均为大体积临时文件（67MB 级），处理后立即清理
+                @unlink($package['regions_file']);
+                if ($jsonlFile !== null) {
+                    @unlink($jsonlFile);
+                }
+            }
 
             $this->reportProgress('running', 90, '落库完成，正在清除缓存并记录版本...');
 
@@ -367,55 +396,21 @@ class RegionDataSyncService
             throw new RuntimeException('区划记录数超过上限 ' . self::MAX_REGIONS);
         }
 
-        $normalized = [];
         $codes = [];
-        $stats = ['province' => 0, 'city' => 0, 'district' => 0, 'street' => 0];
+        $stats = ['province' => 0, 'city' => 0, 'district' => 0, 'street' => 0, 'village' => 0];
         $levelKeys = [
             Region::LEVEL_PROVINCE => 'province',
             Region::LEVEL_CITY => 'city',
             Region::LEVEL_DISTRICT => 'district',
             Region::LEVEL_STREET => 'street',
+            Region::LEVEL_VILLAGE => 'village',
         ];
 
+        $normalized = [];
         foreach (array_values($regions) as $index => $row) {
-            if (! is_array($row)) {
-                throw new RuntimeException('第 ' . ($index + 1) . ' 条区划记录必须是对象');
-            }
-
-            foreach (['code', 'name', 'level', 'parent_code'] as $field) {
-                if (! isset($row[$field]) || trim((string) $row[$field]) === '') {
-                    throw new RuntimeException('第 ' . ($index + 1) . ' 条区划记录缺少必填字段 ' . $field . ' 或为空');
-                }
-            }
-
-            $code = trim((string) $row['code']);
-            if (mb_strlen($code) > self::MAX_CODE_LENGTH) {
-                throw new RuntimeException('区划编码 ' . $code . ' 超过 ' . self::MAX_CODE_LENGTH . ' 位');
-            }
-
-            if (isset($codes[$code])) {
-                throw new RuntimeException('区划编码 ' . $code . ' 重复，每条记录的 code 必须唯一');
-            }
-            $codes[$code] = true;
-
-            $level = (int) $row['level'];
-            if (! isset($levelKeys[$level])) {
-                throw new RuntimeException('区划 ' . $code . ' 的 level 必须为 1（省）/2（市）/3（区县）/4（街道）');
-            }
-
-            $statusValue = (int) ($row['status'] ?? 1);
-
-            $normalized[] = [
-                'code' => $code,
-                'name' => mb_substr(trim((string) $row['name']), 0, 50),
-                'level' => $level,
-                'parent_code' => trim((string) $row['parent_code']),
-                'status' => $statusValue === 0 ? 0 : 1,
-                'lon' => is_numeric($row['lon'] ?? null) ? (float) $row['lon'] : null,
-                'lat' => is_numeric($row['lat'] ?? null) ? (float) $row['lat'] : null,
-            ];
-
-            $stats[$levelKeys[$level]]++;
+            $item = $this->normalizeRegionRow($row, $index, $codes);
+            $normalized[] = $item;
+            $stats[$levelKeys[$item['level']]]++;
         }
 
         // 引用闭环：parent_code 必须为 '0' 或引用数据集中存在的编码
@@ -443,15 +438,288 @@ class RegionDataSyncService
     }
 
     /**
-     * 全量替换落库：单事务全删 → 按 level 分层 chunk 批量插入（parent_code → parent_id）→ 闭包表重建。
+     * 流式校验并规范化 regions.json 文件（大文件不整体载入内存）。
      *
-     * 任一步失败整体回滚，本地数据零影响。
+     * 单遍扫描：逐条校验规范化后写 JSONL 临时文件（供分层导入流式读取），
+     * 同时收集编码集合、上级引用集合与五级统计。常驻内存仅为两个编码集合
+     * （58 万条约 45MB），远低于全量解码的 430MB。
      *
-     * @param array<int,array<string,mixed>> $regions 校验并排序后的全量记录
+     * @return array{count:int,stats:array<string,int>,jsonl_file:string}
+     *
+     * @throws RuntimeException 任一校验不通过或临时文件读写失败时
      */
-    protected function importRegions(array $regions): void
+    protected function validateRegionsFromFile(string $regionsFile): array
     {
-        DB::transaction(function () use ($regions): void {
+        $packDir = storage_path(self::PACK_DIR);
+        $this->ensureDir($packDir);
+
+        $jsonlFile = $packDir . '/regions-rows-' . uniqid() . '.jsonl';
+        $handle = fopen($jsonlFile, 'wb');
+        if ($handle === false) {
+            throw new RuntimeException('无法创建区划数据临时文件');
+        }
+
+        $codes = [];
+        $parentCodes = [];
+        $stats = ['province' => 0, 'city' => 0, 'district' => 0, 'street' => 0, 'village' => 0];
+        $levelKeys = [
+            Region::LEVEL_PROVINCE => 'province',
+            Region::LEVEL_CITY => 'city',
+            Region::LEVEL_DISTRICT => 'district',
+            Region::LEVEL_STREET => 'street',
+            Region::LEVEL_VILLAGE => 'village',
+        ];
+        $count = 0;
+
+        try {
+            foreach ($this->streamRegionRows($regionsFile) as $index => $row) {
+                $normalized = $this->normalizeRegionRow($row, $index, $codes);
+
+                $line = json_encode($normalized, JSON_UNESCAPED_UNICODE);
+                if ($line === false || fwrite($handle, $line . "\n") === false) {
+                    throw new RuntimeException('区划数据临时文件写入失败');
+                }
+
+                // 记录上级引用者编码，闭环校验时反查不存在的上级
+                if ($normalized['parent_code'] !== '0') {
+                    $parentCodes[$normalized['parent_code']] = $normalized['code'];
+                }
+
+                $stats[$levelKeys[$normalized['level']]]++;
+                $count++;
+
+                if ($count > self::MAX_REGIONS) {
+                    throw new RuntimeException('区划记录数超过上限 ' . self::MAX_REGIONS);
+                }
+            }
+
+            fclose($handle);
+
+            if ($count === 0) {
+                throw new RuntimeException('未解析到任何区划记录');
+            }
+
+            // 引用闭环：parent_code 必须为 '0' 或引用数据集中存在的编码
+            foreach ($parentCodes as $parentCode => $childCode) {
+                if (! isset($codes[$parentCode])) {
+                    throw new RuntimeException('区划 ' . $childCode . ' 引用了不存在的上级编码 ' . $parentCode);
+                }
+            }
+
+            // 数据集必须至少包含一条省级记录
+            if ($stats['province'] === 0) {
+                throw new RuntimeException('数据集必须至少包含一条省级（level=1）记录');
+            }
+        } catch (Throwable $e) {
+            if (is_resource($handle)) {
+                fclose($handle);
+            }
+            @unlink($jsonlFile);
+            throw $e;
+        }
+
+        return [
+            'count' => $count,
+            'stats' => $stats,
+            'jsonl_file' => $jsonlFile,
+        ];
+    }
+
+    /**
+     * 校验并规范化单条区划记录（validateRegions 与流式校验共用）。
+     *
+     * 校验规则：必填字段非空、code 全局唯一且不超长、level 限定 1-5；
+     * 规范化：name 截 50 字符、status 归一 0/1、lon/lat 非数值置 null。
+     *
+     * @param mixed $row 原始记录
+     * @param int $index 记录序号（0 起，错误提示用）
+     * @param array<string,bool> $codes 已收集编码集合（引用传入，自动登记实现去重）
+     * @return array<string,mixed> 规范化记录
+     *
+     * @throws RuntimeException 任一校验不通过时
+     */
+    protected function normalizeRegionRow(mixed $row, int $index, array &$codes): array
+    {
+        if (! is_array($row)) {
+            throw new RuntimeException('第 ' . ($index + 1) . ' 条区划记录必须是对象');
+        }
+
+        foreach (['code', 'name', 'level', 'parent_code'] as $field) {
+            if (! isset($row[$field]) || trim((string) $row[$field]) === '') {
+                throw new RuntimeException('第 ' . ($index + 1) . ' 条区划记录缺少必填字段 ' . $field . ' 或为空');
+            }
+        }
+
+        $code = trim((string) $row['code']);
+        if (mb_strlen($code) > self::MAX_CODE_LENGTH) {
+            throw new RuntimeException('区划编码 ' . $code . ' 超过 ' . self::MAX_CODE_LENGTH . ' 位');
+        }
+
+        if (isset($codes[$code])) {
+            throw new RuntimeException('区划编码 ' . $code . ' 重复，每条记录的 code 必须唯一');
+        }
+        $codes[$code] = true;
+
+        $level = (int) $row['level'];
+        if ($level < 1 || $level > 5) {
+            throw new RuntimeException('区划 ' . $code . ' 的 level 必须为 1（省）/2（市）/3（区县）/4（街道）/5（村/社区）');
+        }
+
+        return [
+            'code' => $code,
+            'name' => mb_substr(trim((string) $row['name']), 0, 50),
+            'level' => $level,
+            'parent_code' => trim((string) $row['parent_code']),
+            'status' => (int) ($row['status'] ?? 1) === 0 ? 0 : 1,
+            'lon' => is_numeric($row['lon'] ?? null) ? (float) $row['lon'] : null,
+            'lat' => is_numeric($row['lat'] ?? null) ? (float) $row['lat'] : null,
+        ];
+    }
+
+    /**
+     * 流式逐条提取 regions.json（JSON 数组）中的区划记录。
+     *
+     * 村级数据 58 万条 / 67MB 整体 json_decode 会产生 400MB+ 常驻数组，因此用
+     * 指针扫描 + 字符串感知的大括号平衡逐对象提取：单条解码即抛即用，
+     * 全程常驻内存恒定（缓冲区 1MB 级）。
+     *
+     * @return \Generator<int,array<string,mixed>> 依次 yield 每条记录（key 为 0 起序号）
+     *
+     * @throws RuntimeException 文件不可读、顶层不是 JSON 数组或记录无法解析时
+     */
+    protected function streamRegionRows(string $regionsFile): \Generator
+    {
+        $handle = fopen($regionsFile, 'rb');
+        if ($handle === false) {
+            throw new RuntimeException('regions.json 区划数据文件无法读取');
+        }
+
+        try {
+            $buffer = '';
+            $pos = 0;
+            $depth = 0;
+            $objStart = 0;
+            $inString = false;
+            $escape = false;
+            $seenArrayStart = false;
+            $index = 0;
+
+            while (true) {
+                $length = strlen($buffer);
+
+                while ($pos < $length) {
+                    $char = $buffer[$pos];
+
+                    if ($depth === 0) {
+                        // 对象外：'[' 与分隔符直接跳过，'{' 开启对象扫描
+                        if ($char === '{') {
+                            $depth = 1;
+                            $objStart = $pos;
+                            $inString = false;
+                            $escape = false;
+                        } elseif ($char === '[') {
+                            $seenArrayStart = true;
+                        }
+                        $pos++;
+                        continue;
+                    }
+
+                    if ($inString) {
+                        if ($escape) {
+                            $escape = false;
+                        } elseif ($char === '\\') {
+                            $escape = true;
+                        } elseif ($char === '"') {
+                            $inString = false;
+                        }
+                    } elseif ($char === '"') {
+                        $inString = true;
+                    } elseif ($char === '{') {
+                        $depth++;
+                    } elseif ($char === '}') {
+                        $depth--;
+                        if ($depth === 0) {
+                            $json = substr($buffer, $objStart, $pos - $objStart + 1);
+                            $row = json_decode($json, true);
+                            if (! is_array($row)) {
+                                throw new RuntimeException('regions.json 第 ' . ($index + 1) . ' 条区划记录解析失败');
+                            }
+                            $pos++;
+                            yield $index => $row;
+                            $index++;
+                            continue;
+                        }
+                    }
+                    $pos++;
+                }
+
+                if (feof($handle)) {
+                    break;
+                }
+
+                // 缓冲区耗尽：保留未完成对象前缀，读下一块
+                if ($depth > 0) {
+                    $buffer = substr($buffer, $objStart);
+                    $pos -= $objStart;
+                    $objStart = 0;
+                } else {
+                    $buffer = substr($buffer, $pos);
+                    $pos = 0;
+                }
+
+                $chunk = fread($handle, self::READ_CHUNK_SIZE);
+                if ($chunk === false || $chunk === '') {
+                    break;
+                }
+                $buffer .= $chunk;
+            }
+
+            if (! $seenArrayStart) {
+                throw new RuntimeException(self::REGIONS_FILE . ' 不是合法的 JSON 数组');
+            }
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /**
+     * 逐行迭代 JSONL 临时文件（每行一条规范化记录，供分层导入流式读取）。
+     *
+     * @return \Generator<int,array<string,mixed>>
+     */
+    protected function iterateJsonlRows(string $jsonlFile): \Generator
+    {
+        $handle = fopen($jsonlFile, 'rb');
+        if ($handle === false) {
+            throw new RuntimeException('区划数据临时文件读取失败');
+        }
+
+        try {
+            while (($line = fgets($handle)) !== false) {
+                $row = json_decode($line, true);
+                if (is_array($row)) {
+                    yield $row;
+                }
+            }
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /**
+     * 全量替换落库：单事务全删 → 按 level 分层多遍扫描 JSONL 批量插入
+     * （parent_code → parent_id）→ 闭包表重建。
+     *
+     * 分层导入对校验产出的 JSONL 按 level 1→5 各扫一遍：层序天然保证父级先于
+     * 子级落库，层内顺序无关，故不依赖 regions.json 的排序。任一步失败整体
+     * 回滚，本地数据零影响。
+     *
+     * @param string $jsonlFile 校验产出的 JSONL 中间文件（每行一条规范化记录）
+     * @param int $villageBatches 村级层批次数（由校验统计推算，0 表示不上报村级细分进度）
+     */
+    protected function importRegions(string $jsonlFile, int $villageBatches = 0): void
+    {
+        DB::transaction(function () use ($jsonlFile, $villageBatches): void {
             // 全删（MySQL 下 TRUNCATE 会隐式提交事务，必须用 DELETE）
             DB::table('app_cmspro_region_closure')->delete();
             DB::table('app_cmspro_region_region')->delete();
@@ -459,55 +727,55 @@ class RegionDataSyncService
             $now = date('Y-m-d H:i:s');
             $codeMap = []; // code => id，逐层收集供下层 parent 解析
 
-            // 各层落库进度基准（45% 起，闭包重建前推进到 82%），街道层为数据大头占最大区间
-            $levelBasePercent = [1 => 48, 2 => 52, 3 => 58, 4 => 64];
-            $levelNames = [1 => '省级', 2 => '市级', 3 => '区县级', 4 => '街道级'];
+            // 各层落库进度基准（45% 起，闭包重建前推进到 82%），村级层为数据大头占最大区间
+            $levelBasePercent = [1 => 48, 2 => 52, 3 => 56, 4 => 58, 5 => 60];
+            $levelNames = [1 => '省级', 2 => '市级', 3 => '区县级', 4 => '街道级', 5 => '村级'];
 
-            foreach ([1, 2, 3, 4] as $level) {
-                $levelRows = array_values(array_filter(
-                    $regions,
-                    static fn (array $row): bool => (int) $row['level'] === $level
-                ));
+            foreach ([1, 2, 3, 4, 5] as $level) {
+                $batch = [];
+                $batchIndex = 0;
 
-                $chunks = array_chunk($levelRows, self::CHUNK_SIZE);
-                $chunkTotal = count($chunks);
-
-                foreach ($chunks as $chunkIndex => $chunk) {
-                    $batch = [];
-                    foreach ($chunk as $row) {
-                        $batch[] = [
-                            'code' => $row['code'],
-                            'name' => $row['name'],
-                            'level' => (int) $row['level'],
-                            'parent_id' => $row['parent_code'] === '0'
-                                ? 0
-                                : (int) ($codeMap[$row['parent_code']] ?? 0),
-                            'status' => (int) $row['status'],
-                            'lon' => $row['lon'],
-                            'lat' => $row['lat'],
-                            'create_time' => $now,
-                            'update_time' => $now,
-                        ];
+                foreach ($this->iterateJsonlRows($jsonlFile) as $row) {
+                    if ((int) $row['level'] !== $level) {
+                        continue;
                     }
-                    DB::table('app_cmspro_region_region')->insert($batch);
 
-                    // 街道层数据量大，按 chunk 进度细分上报（64% → 82%）
-                    if ($level === 4 && $chunkTotal > 0) {
-                        $percent = 64 + (int) round((($chunkIndex + 1) / $chunkTotal) * 18);
-                        $this->reportProgress('running', $percent, '正在写入街道级数据（' . ($chunkIndex + 1) . '/' . $chunkTotal . ' 批）...');
+                    $batch[] = [
+                        'code' => $row['code'],
+                        'name' => $row['name'],
+                        'level' => (int) $row['level'],
+                        'parent_id' => $row['parent_code'] === '0'
+                            ? 0
+                            : (int) ($codeMap[$row['parent_code']] ?? 0),
+                        'status' => (int) $row['status'],
+                        'lon' => $row['lon'],
+                        'lat' => $row['lat'],
+                        'create_time' => $now,
+                        'update_time' => $now,
+                    ];
+
+                    if (count($batch) >= self::CHUNK_SIZE) {
+                        $this->insertRegionBatch($batch, $level, $batchIndex, $villageBatches);
+                        $batch = [];
+                        $batchIndex++;
                     }
                 }
 
-                // 收集本层 code => id（契约已保证父级先于子级，此映射必命中）
-                foreach (
-                    DB::table('app_cmspro_region_region')
-                        ->where('level', $level)
-                        ->pluck('id', 'code') as $code => $id
-                ) {
-                    $codeMap[(string) $code] = (int) $id;
+                if ($batch !== []) {
+                    $this->insertRegionBatch($batch, $level, $batchIndex, $villageBatches);
                 }
 
-                if ($level < 4) {
+                // 收集本层 code => id（分层导入已保证父级先于子级，此映射必命中）
+                // 村级层达 54 万+，chunkById 流式收集避免一次性 pluck 全量驻留内存
+                DB::table('app_cmspro_region_region')
+                    ->where('level', $level)
+                    ->chunkById(5000, function ($rows) use (&$codeMap): void {
+                        foreach ($rows as $row) {
+                            $codeMap[(string) $row->code] = (int) $row->id;
+                        }
+                    });
+
+                if ($level < 5) {
                     $this->reportProgress('running', $levelBasePercent[$level], '已写入' . ($levelNames[$level] ?? '') . '数据，继续处理下级...');
                 }
             }
@@ -519,9 +787,28 @@ class RegionDataSyncService
     }
 
     /**
-     * 解包数据包并读取 regions.json 与 meta.json（防 Zip Slip，兼容包内多一层包裹目录）。
+     * 单批插入区划记录；村级层按批进度细分上报。
      *
-     * @return array{regions:array<int,mixed>,meta_version:string} 区划记录数组与包内声明的版本号（缺失为空串）
+     * @param array<int,array<string,mixed>> $batch 本批落库记录
+     */
+    protected function insertRegionBatch(array $batch, int $level, int $batchIndex, int $villageBatchTotal): void
+    {
+        DB::table('app_cmspro_region_region')->insert($batch);
+
+        // 村级层数据量最大（数十万条），按 chunk 进度细分上报（60% → 82%）
+        if ($level === 5 && $villageBatchTotal > 0) {
+            $percent = 60 + (int) round((($batchIndex + 1) / $villageBatchTotal) * 22);
+            $this->reportProgress('running', $percent, '正在写入村级数据（' . ($batchIndex + 1) . '/' . $villageBatchTotal . ' 批）...');
+        }
+    }
+
+    /**
+     * 解包数据包并转存 regions.json（防 Zip Slip，兼容包内多一层包裹目录）。
+     *
+     * regions.json 体积大（村级数据 67MB），不整体载入内存：转存为持久文件后
+     * 返回路径，由调用方流式校验/导入并在 finally 中清理。
+     *
+     * @return array{regions_file:string,meta_version:string} 转存后的 regions.json 路径与包内声明的版本号（缺失为空串）
      */
     protected function readPackageFromZip(string $zipPath): array
     {
@@ -568,11 +855,6 @@ class RegionDataSyncService
                 throw new RuntimeException('数据包缺少 ' . self::REGIONS_FILE);
             }
 
-            $regions = json_decode((string) File::get($regionsFile), true);
-            if (! is_array($regions)) {
-                throw new RuntimeException(self::REGIONS_FILE . ' 不是合法的 JSON 数组');
-            }
-
             // meta.json 可选：存在时取包内声明的版本号（供导入后记录本地版本）
             $metaVersion = '';
             $metaFile = $locate(self::META_FILE);
@@ -583,7 +865,16 @@ class RegionDataSyncService
                 }
             }
 
-            return ['regions' => $regions, 'meta_version' => $metaVersion];
+            // 转存 regions.json 到数据包目录（storage 同卷 rename，避免大文件复制开销；
+            // 放在最后一步，成功即返回，转存文件由调用方 finally 清理）
+            $packDir = storage_path(self::PACK_DIR);
+            $this->ensureDir($packDir);
+            $persistFile = $packDir . '/regions-' . uniqid() . '.json';
+            if (! @rename($regionsFile, $persistFile)) {
+                throw new RuntimeException(self::REGIONS_FILE . ' 转存失败');
+            }
+
+            return ['regions_file' => $persistFile, 'meta_version' => $metaVersion];
         } finally {
             if (is_dir($workDir)) {
                 File::deleteDirectory($workDir);
@@ -663,7 +954,7 @@ class RegionDataSyncService
     }
 
     /**
-     * HTTP 客户端（下载 4.7 万条约 2MB 数据包，放宽超时）。
+     * HTTP 客户端（下载 58 万条约 5MB 数据包，放宽超时）。
      */
     protected function httpClient()
     {

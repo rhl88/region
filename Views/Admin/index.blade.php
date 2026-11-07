@@ -10,10 +10,11 @@
     <link rel="stylesheet" href="{{ asset('Admin/css/variables.css') }}">
     <link rel="stylesheet" href="{{ asset('Admin/css/reset.css') }}">
     <style>
-        .stat-card{display:inline-block;width:23%;margin-right:2%;padding:20px;background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,0.08);text-align:center;box-sizing:border-box;vertical-align:top;}
-        .stat-card:last-child{margin-right:0;}
-        .stat-card .stat-num{font-size:32px;font-weight:bold;color:#2563eb;}
-        .stat-card .stat-label{font-size:14px;color:#666;margin-top:8px;}
+        /* 统计卡片：5 项 flex 等分同一行（原 inline-block + 23% 宽度按 4 项设计，加到 5 项后总宽 123% 必然换行） */
+        .layui-card-body.stat-row{display:flex;gap:12px;}
+        .stat-card{flex:1;min-width:0;padding:14px 10px;background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,0.08);text-align:center;box-sizing:border-box;}
+        .stat-card .stat-num{font-size:26px;line-height:1.2;font-weight:bold;color:#2563eb;}
+        .stat-card .stat-label{font-size:13px;color:#666;margin-top:4px;}
         .import-progress{margin-top:10px;padding:15px;background:#fffbe6;border:1px solid #ffe58f;border-radius:4px;display:none;}
         .import-progress .layui-progress{margin-top:8px;}
         .import-log{max-height:200px;overflow-y:auto;margin-top:8px;padding:8px;background:#fafafa;border-radius:4px;font-size:12px;line-height:1.8;color:#666;}
@@ -32,23 +33,53 @@
         .one-key-import-menu .one-key-menu-item:hover{color:#1e9fff;}
         /* 旧版数据更新：一级「点击」展开面板，收纳原有一键导入/一键数据更新/清除缓存/更新数据 */
         .legacy-wrap{display:inline-block;position:relative;vertical-align:middle;}
-        .legacy-menu{display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:9998;min-width:210px;background:#fff;border:1px solid #e6e6e6;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.15);padding:8px;}
+        .legacy-menu{display:none;position:absolute;top:calc(100% + 4px);right:0;left:auto;z-index:9998;min-width:210px;background:#fff;border:1px solid #e6e6e6;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.15);padding:8px;}
         .legacy-menu.show{display:block;}
         .legacy-menu .legacy-item{display:block;width:100%;margin:0 0 6px;text-align:left;box-sizing:border-box;}
         .legacy-menu .legacy-item:last-child{margin-bottom:0;}
         .legacy-menu .legacy-sep{height:1px;background:#f0f0f0;margin:6px 0;}
-        /* 面板内二级悬停子菜单改为右侧弹出；margin-left/padding-left 桥接消除悬停间隙 */
+        /* 面板内二级悬停子菜单改为左侧弹出（面板已右对齐最右侧按钮，避免溢出屏幕）；margin-right/padding-right 桥接消除悬停间隙 */
         .legacy-menu .one-key-wrap{display:block;width:100%;}
-        .legacy-menu .one-key-menu{top:-6px;left:100%;margin-left:-8px;padding-left:8px;padding-top:5px;padding-bottom:5px;}
+        .legacy-menu .one-key-menu{top:-6px;right:100%;left:auto;margin-right:-8px;padding-right:8px;padding-top:5px;padding-bottom:5px;}
         /* 「在线同步官方数据」右上角推荐徽标 */
         .recommend-badge{position:absolute;top:-8px;right:-6px;z-index:2;padding:1px 6px;font-size:11px;line-height:16px;color:#fff;background:#ff5722;border-radius:8px;font-style:normal;white-space:nowrap;}
+        /* 更新坐标弹窗（开发模式） */
+        .coord-dialog{padding:18px 20px;font-size:13px;color:#333;max-height:68vh;overflow-y:auto;}
+        .coord-tabs{display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid #eee;}
+        .coord-tab{padding:8px 16px;font-size:13px;color:#666;cursor:pointer;border-bottom:2px solid transparent;}
+        .coord-tab.active{color:#1e9fff;border-bottom-color:#1e9fff;}
+        .coord-pane{display:none;}
+        .coord-pane.active{display:block;}
+        .coord-tip{margin-bottom:14px;padding:8px 10px;background:#f6faff;border:1px solid #d9ecff;border-radius:4px;line-height:1.7;color:#5c7ca8;}
+        .coord-row{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap;}
+        .coord-select{flex:1;min-width:130px;height:36px;padding:0 8px;background:#fff;border:1px solid #e6e6e6;border-radius:4px;font-size:13px;color:#333;outline:none;}
+        .coord-select:disabled{background:#f7f7f7;color:#bbb;cursor:not-allowed;}
+        .coord-arrow{color:#c9c9c9;}
+        .coord-info{padding:10px 12px;background:#fafafa;border-radius:4px;line-height:2;word-break:break-all;}
+        .coord-label{color:#999;}
+        .coord-ok{color:#16b777;}
+        .coord-fail{color:#ff5722;}
+        .coord-none{color:#ff5722;}
+        /* 批量自动更新面板 */
+        .batch-row{display:flex;align-items:center;flex-wrap:wrap;gap:14px;margin-bottom:12px;font-size:13px;color:#333;}
+        .batch-row label{display:inline-flex;align-items:center;gap:4px;cursor:pointer;}
+        .batch-qps-input{width:56px;height:28px;padding:0 6px;border:1px solid #e6e6e6;border-radius:4px;font-size:13px;color:#333;outline:none;text-align:center;}
+        .batch-qps-input:focus{border-color:#1e9fff;}
+        .batch-qps-tip{font-size:12px;color:#999;}
+        .batch-actions{margin-bottom:12px;}
+        .batch-actions .layui-btn{margin-right:8px;}
+        .batch-bar{height:10px;background:#f0f0f0;border-radius:5px;overflow:hidden;}
+        .batch-bar-inner{height:100%;width:0;background:#1e9fff;transition:width .2s;}
+        .batch-stats{margin-top:8px;font-size:12px;color:#666;line-height:1.8;}
+        .batch-log{max-height:150px;overflow-y:auto;margin-top:8px;padding:8px;background:#fafafa;border-radius:4px;font-size:12px;line-height:1.8;color:#666;}
+        .coord-footer{margin-top:16px;text-align:right;}
     </style>
 </head>
 <body>
 <div class="pear-container">
     {{-- 统计卡片 --}}
     <div class="layui-card">
-        <div class="layui-card-body">
+        <div class="layui-card-body stat-row">
             <div class="stat-card">
                 <div class="stat-num" id="statProvince">{{ $stats['province'] ?? 0 }}</div>
                 <div class="stat-label">省/直辖市</div>
@@ -65,6 +96,10 @@
                 <div class="stat-num" id="statStreet">{{ $stats['street'] ?? 0 }}</div>
                 <div class="stat-label">街道/乡镇</div>
             </div>
+            <div class="stat-card">
+                <div class="stat-num" id="statVillage">{{ $stats['village'] ?? 0 }}</div>
+                <div class="stat-label">村/社区</div>
+            </div>
         </div>
     </div>
 
@@ -72,6 +107,32 @@
     <div class="layui-card" style="margin-top:15px;">
         <div class="layui-card-body">
             <div style="margin-bottom:15px;">
+                <button class="layui-btn layui-btn-primary" id="exportSnapshotBtn" title="导出全量数据快照包，供上传版本服务器发布"><i class="fa fa-download"></i> 导出快照包</button>
+                <button class="layui-btn layui-btn-primary" id="importSnapshotBtn" title="导入其他站点分享的快照包（ZIP），全量替换本地区划数据"><i class="fa fa-upload"></i> 导入快照包</button>
+                <input type="file" id="importSnapshotFile" accept=".zip" style="display:none;">
+                <span style="position:relative;display:inline-block;vertical-align:middle;">
+                    <button class="layui-btn layui-btn-normal" id="syncRegionDataBtn" title="从版本服务器在线同步官方区划数据（全量替换本地数据）"><i class="fa fa-cloud-download"></i> 在线同步官方数据</button>
+                    <i class="recommend-badge">推荐</i>
+                </span>
+                <div class="layui-inline" style="margin-left:20px;">
+                    <label class="layui-form-label" style="width:auto;">层级</label>
+                    <div class="layui-input-inline layui-form" style="width:120px;margin-top: unset;">
+                        <select id="levelFilter" lay-filter="levelFilter">
+                            <option value="">全部</option>
+                            <option value="1">省/直辖市</option>
+                            <option value="2">市</option>
+                            <option value="3">区/县</option>
+                            <option value="4">街道/乡镇</option>
+                            <option value="5">村/社区</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="layui-inline">
+                    <input type="text" id="keywordInput" placeholder="搜索名称或代码" class="layui-input" style="width:200px;">
+                </div>
+                <button class="layui-btn" id="searchBtn"><i class="fa fa-search"></i> 搜索</button>
+                @if($devMode)
+                <button class="layui-btn layui-btn-warm" id="updateCoordBtn" title="开发模式：按百度地图地址解析结果更新单个区划坐标"><i class="fa fa-map-marker"></i> 更新坐标</button>
                 {{-- 旧版数据更新：点击展开面板，收纳原「一键导入 / 一键数据更新 / 清除缓存 / 更新数据」；前两项保留悬停二级单项入口 --}}
                 <div class="legacy-wrap">
                     <button class="layui-btn layui-btn-primary" id="legacyUpdateBtn"><i class="fa fa-history"></i> 旧版数据更新 <i class="fa fa-caret-down"></i></button>
@@ -101,29 +162,7 @@
                         <button class="layui-btn layui-btn-primary legacy-item" id="updateDataBtn"><i class="fa fa-cloud-download"></i> 更新数据</button>
                     </div>
                 </div>
-                <button class="layui-btn layui-btn-primary" id="exportSnapshotBtn" title="导出全量数据快照包，供上传版本服务器发布"><i class="fa fa-download"></i> 导出快照包</button>
-                <button class="layui-btn layui-btn-primary" id="importSnapshotBtn" title="导入其他站点分享的快照包（ZIP），全量替换本地区划数据"><i class="fa fa-upload"></i> 导入快照包</button>
-                <input type="file" id="importSnapshotFile" accept=".zip" style="display:none;">
-                <span style="position:relative;display:inline-block;vertical-align:middle;">
-                    <button class="layui-btn layui-btn-normal" id="syncRegionDataBtn" title="从版本服务器在线同步官方区划数据（全量替换本地数据）"><i class="fa fa-cloud-download"></i> 在线同步官方数据</button>
-                    <i class="recommend-badge">推荐</i>
-                </span>
-                <div class="layui-inline" style="margin-left:20px;">
-                    <label class="layui-form-label" style="width:auto;">层级</label>
-                    <div class="layui-input-inline layui-form" style="width:120px;margin-top: unset;">
-                        <select id="levelFilter" lay-filter="levelFilter">
-                            <option value="">全部</option>
-                            <option value="1">省/直辖市</option>
-                            <option value="2">市</option>
-                            <option value="3">区/县</option>
-                            <option value="4">街道/乡镇</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="layui-inline">
-                    <input type="text" id="keywordInput" placeholder="搜索名称或代码" class="layui-input" style="width:200px;">
-                </div>
-                <button class="layui-btn" id="searchBtn"><i class="fa fa-search"></i> 搜索</button>
+                @endif
             </div>
 
             {{-- 街道导入进度 --}}
@@ -241,6 +280,11 @@
 
 <script src="{{ asset('CmsProUi/component/layui/layui.js') }}"></script>
 <script src="{{ asset('CmsProUi/component/pear/pear.js') }}"></script>
+@if($devMode && $baiduAk)
+{{-- 开发模式「更新坐标」：百度地图 JSAPI，AK 复用「地图」应用的浏览器端 AK --}}
+<script>window.__bmapApiReady = false; function onBMapApiReady(){ window.__bmapApiReady = true; }</script>
+<script src="https://api.map.baidu.com/api?v=4.0&ak={{ $baiduAk }}&callback=onBMapApiReady"></script>
+@endif
 <script>
 layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     var table = layui.table;
@@ -256,7 +300,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
     // 渲染层级筛选下拉框（layui 美化）
     form.render('select');
 
-    var levelNames = {1:'省/直辖市', 2:'市', 3:'区/县', 4:'街道/乡镇'};
+    var levelNames = {1:'省/直辖市', 2:'市', 3:'区/县', 4:'街道/乡镇', 5:'村/社区'};
 
     // 渲染数据表格
     table.render({
@@ -292,6 +336,771 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                 keyword: $('#keywordInput').val()
             },
             page: {curr: 1}
+        });
+    });
+
+    // ==================== 更新坐标（开发模式） ====================
+    // 依赖「地图」应用的浏览器端 AK，仅在 APP_DEV_MODE=true 时渲染入口
+    var coordPlaceholders = ['', '省/直辖市', '市', '区/县', '街道/乡镇'];
+    var coordPath = [];
+    // 库中经纬度查询序号：级联快速切换时丢弃过期响应
+    var coordLonLatSeq = 0;
+    var coordBaiduAk = @json($baiduAk ?? '');
+
+    /**
+     * 按已选路径组装百度请求地址：
+     * 省+市 与 区县+街道 之间保留一个空格，如「浙江省嘉兴市 秀洲区嘉北街道」
+     */
+    function buildCoordAddress(path){
+        var splitIndex = -1;
+        for(var i = 0; i < path.length; i++){
+            if(path[i].level >= 3){
+                splitIndex = i;
+                break;
+            }
+        }
+        var names = $.map(path, function(item){ return item.name; });
+        if(splitIndex <= 0){
+            return names.join('');
+        }
+        return names.slice(0, splitIndex).join('') + ' ' + names.slice(splitIndex).join('');
+    }
+
+    // 渲染当前所选区划库中的经纬度：有坐标显示数值，无坐标明确提示
+    function renderCoordLonLat(coordinate){
+        var $el = $('#coordLonLat').removeClass('coord-ok coord-none');
+        if(!coordinate){
+            $el.text('-');
+            return;
+        }
+        if(coordinate.lon === null || coordinate.lat === null
+            || typeof coordinate.lon === 'undefined' || typeof coordinate.lat === 'undefined'){
+            $el.addClass('coord-none').text('暂无经纬度');
+            return;
+        }
+        $el.addClass('coord-ok').text(
+            Number(coordinate.lon).toFixed(6) + ', ' + Number(coordinate.lat).toFixed(6)
+        );
+    }
+
+    // 查询所选区划当前库中经纬度（序号保证只应用最后一次选择的结果）
+    function loadCoordCoordinate(code){
+        var seq = ++coordLonLatSeq;
+        $.get('/api/admin/cmspro/region/coordinate', {code: code}, function(res){
+            if(seq !== coordLonLatSeq){
+                return;
+            }
+            renderCoordLonLat((res.code === 0 && res.data) ? res.data : null);
+        }).fail(function(){
+            if(seq !== coordLonLatSeq){
+                return;
+            }
+            renderCoordLonLat(null);
+        });
+    }
+
+    // 刷新「目标区划 / 请求地址 / 当前经纬度」预览
+    function updateCoordPreview(){
+        var target = coordPath.length ? coordPath[coordPath.length - 1] : null;
+        if(!target){
+            coordLonLatSeq++;
+            $('#coordTarget').text('-');
+            $('#coordAddress').text('-');
+            renderCoordLonLat(null);
+            return;
+        }
+        var names = $.map(coordPath, function(item){ return item.name; });
+        $('#coordTarget').text(names.join(' > ') + '（' + (levelNames[target.level] || '') + '）');
+        $('#coordAddress').text(buildCoordAddress(coordPath));
+        loadCoordCoordinate(target.code);
+    }
+
+    // 重置指定层级及之后的级联下拉
+    function resetCoordSelects(from){
+        for(var i = from; i <= 4; i++){
+            $('#coordSel' + i)
+                .html('<option value="">' + coordPlaceholders[i] + '</option>')
+                .prop('disabled', true);
+        }
+    }
+
+    // 加载下级区划，占位文案按实际层级显示（如直辖市下一级直接是区/县）
+    function loadCoordChildren(depth, parentCode){
+        if(depth > 4){
+            return;
+        }
+        $.get('/api/admin/cmspro/region/children', {code: parentCode}, function(res){
+            var items = (res.code === 0 && res.data) ? res.data : [];
+            if(items.length === 0){
+                resetCoordSelects(depth);
+                return;
+            }
+            var placeholder = levelNames[items[0].level] || coordPlaceholders[depth];
+            var html = '<option value="">' + placeholder + '</option>';
+            $.each(items, function(_, item){
+                html += '<option value="' + item.code + '" data-level="' + item.level + '">'
+                    + item.name + '</option>';
+            });
+            $('#coordSel' + depth).html(html).prop('disabled', false);
+            resetCoordSelects(depth + 1);
+        });
+    }
+
+    // 初始化弹窗内级联下拉
+    function initCoordDialog(){
+        coordPath = [];
+        resetCoordSelects(1);
+        $('#coordResult').removeClass('coord-ok coord-fail').text('-');
+        updateCoordPreview();
+        $.get('/api/admin/cmspro/region/provinces', function(res){
+            var items = (res.code === 0 && res.data) ? res.data : [];
+            var html = '<option value="">' + coordPlaceholders[1] + '</option>';
+            $.each(items, function(_, item){
+                html += '<option value="' + item.code + '" data-level="' + item.level + '">'
+                    + item.name + '</option>';
+            });
+            $('#coordSel1').html(html).prop('disabled', false);
+        });
+    }
+
+    // 获取百度正地址解析实例（JSAPI 4.0 命名空间为 BMapGL）
+    function getBaiduGeocoder(){
+        var ns = window.BMapGL || window.BMap;
+        return (ns && ns.Geocoder) ? new ns.Geocoder() : null;
+    }
+
+    // 解析地址 → 更新区划坐标
+    function doCoordUpdate(){
+        var target = coordPath.length ? coordPath[coordPath.length - 1] : null;
+        if(!target){
+            layer.msg('请先选择要更新的区划', {icon: 0});
+            return;
+        }
+        var geocoder = getBaiduGeocoder();
+        if(!geocoder){
+            layer.msg('百度地图 JSAPI 未就绪，请检查「地图」应用的浏览器端 AK 与域名白名单', {icon: 2});
+            return;
+        }
+        var address = buildCoordAddress(coordPath);
+        var $result = $('#coordResult').removeClass('coord-ok coord-fail').text('正在解析地址并更新...');
+        geocoder.getPoint(address, function(point){
+            if(!point){
+                $result.addClass('coord-fail').text('百度地图未解析到坐标，请核对地址：' + address);
+                return;
+            }
+            $.post('/api/admin/cmspro/region/update-coordinate', {
+                code: target.code,
+                lng: point.lng,
+                lat: point.lat
+            }, function(res){
+                if(res.code !== 0 || !res.data){
+                    $result.addClass('coord-fail').text('更新失败：' + (res.message || '未知错误'));
+                    return;
+                }
+                var data = res.data;
+                $result.addClass('coord-ok').html(
+                    '百度坐标（BD-09）：' + Number(point.lng).toFixed(6) + ', '
+                    + Number(point.lat).toFixed(6)
+                    + '<br>已存储坐标（GCJ-02）：' + Number(data.lon).toFixed(6) + ', '
+                    + Number(data.lat).toFixed(6)
+                    + '<br>' + (data.name || target.name) + ' 坐标更新成功'
+                );
+                table.reload('regionTable');
+                refreshStats();
+                // 更新成功后立即回显库中最新经纬度
+                loadCoordCoordinate(target.code);
+            }).fail(function(){
+                $result.addClass('coord-fail').text('更新请求失败，请检查登录状态或网络');
+            });
+        }, coordPath.length ? coordPath[0].name : '');
+    }
+
+    // ==================== 批量自动更新 ====================
+    var BATCH_STORE_KEY = 'cmsproregion_coord_batch_job';
+    var BATCH_CONCURRENCY = 3;
+    var BATCH_WRITE_SIZE = 20;
+    var BATCH_DEFAULT_QPS = 3;
+    var BATCH_MIN_QPS = 1;
+    var BATCH_MAX_QPS = 10;
+    var batchState = null;
+
+    // 请求频率（每秒请求数）取值归一化，避免非法输入导致调度异常
+    function normalizeBatchQps(value){
+        var qps = parseInt(value, 10);
+        if(isNaN(qps)){
+            return BATCH_DEFAULT_QPS;
+        }
+        return Math.min(BATCH_MAX_QPS, Math.max(BATCH_MIN_QPS, qps));
+    }
+
+    function createBatchState(levels, onlyMissing, qps){
+        return {
+            running: false,
+            paused: false,
+            stopped: false,
+            finishing: false,
+            finished: false,
+            loading: false,
+            levels: levels,
+            onlyMissing: onlyMissing,
+            qps: qps,
+            lastSentAt: 0,
+            scheduleTimer: null,
+            cursor: '',
+            requestCursor: '',
+            total: 0,
+            processed: 0,
+            success: 0,
+            fail: 0,
+            queue: [],
+            hasMore: true,
+            inflight: 0,
+            pendingWrites: []
+        };
+    }
+
+    function appendBatchLog(text){
+        var $log = $('#batchLog');
+        if(!$log.length){
+            return;
+        }
+        $log.append('<div>[' + new Date().toLocaleTimeString() + '] ' + text + '</div>');
+        if($log.children().length > 200){
+            $log.children().first().remove();
+        }
+        $log.scrollTop($log[0].scrollHeight);
+    }
+
+    function updateBatchProgress(){
+        if(!batchState){
+            return;
+        }
+        var percent = batchState.total > 0
+            ? Math.min(100, Math.round(batchState.processed / batchState.total * 100))
+            : 0;
+        $('#batchBar').css('width', percent + '%');
+        $('#batchStats').text(
+            '已处理 ' + batchState.processed + (batchState.total ? ' / ' + batchState.total : '')
+            + ' 条，成功 ' + batchState.success + ' 条，失败 ' + batchState.fail + ' 条'
+            + (batchState.paused ? '（已暂停）' : '')
+        );
+    }
+
+    function syncBatchButtons(){
+        var running = !!(batchState && batchState.running);
+        $('#batchStartBtn').prop('disabled', running).toggleClass('layui-btn-disabled', running);
+        $('#batchPauseBtn').prop('disabled', !running).toggleClass('layui-btn-disabled', !running);
+        $('#batchStopBtn').prop('disabled', !running).toggleClass('layui-btn-disabled', !running);
+        $('#batchPauseBtn').text(running && batchState.paused ? '继续' : '暂停');
+    }
+
+    // 任务进度存本地，页面关闭或刷新后可续跑
+    function saveBatchJob(){
+        if(!batchState){
+            return;
+        }
+        try{
+            localStorage.setItem(BATCH_STORE_KEY, JSON.stringify({
+                levels: batchState.levels,
+                onlyMissing: batchState.onlyMissing,
+                qps: batchState.qps,
+                cursor: batchState.cursor,
+                total: batchState.total,
+                processed: batchState.processed,
+                success: batchState.success,
+                fail: batchState.fail,
+                savedAt: new Date().toLocaleString()
+            }));
+        }catch(e){
+            // localStorage 不可用时不影响批量执行
+        }
+    }
+
+    function clearBatchJob(){
+        try{
+            localStorage.removeItem(BATCH_STORE_KEY);
+        }catch(e){
+            // 忽略
+        }
+    }
+
+    function readBatchJob(){
+        try{
+            var raw = localStorage.getItem(BATCH_STORE_KEY);
+            return raw ? JSON.parse(raw) : null;
+        }catch(e){
+            return null;
+        }
+    }
+
+    function initBatchPanel(){
+        batchState = null;
+        $('#batchBar').css('width', '0%');
+        $('#batchLog').html('');
+
+        var job = readBatchJob();
+        $('#batchQps').val(BATCH_DEFAULT_QPS);
+        if(job && job.processed){
+            $('.batch-level').prop('checked', false);
+            $.each(job.levels || [], function(_, level){
+                $('.batch-level[value="' + level + '"]').prop('checked', true);
+            });
+            $('#batchOnlyMissing').prop('checked', !!job.onlyMissing);
+            $('#batchQps').val(normalizeBatchQps(job.qps));
+            $('#batchResumeBtn').show().text(
+                '继续上次任务（已处理 ' + job.processed + (job.total ? '/' + job.total : '') + ' 条）'
+            );
+            $('#batchStats').text('上次任务未完成（保存于 ' + (job.savedAt || '-') + '），可点击「继续上次任务」');
+        }else{
+            $('#batchResumeBtn').hide();
+            $('#batchStats').text('尚未开始');
+        }
+
+        $('#batchStartBtn').prop('disabled', false).removeClass('layui-btn-disabled');
+        $('#batchPauseBtn').prop('disabled', true).addClass('layui-btn-disabled').text('暂停');
+        $('#batchStopBtn').prop('disabled', true).addClass('layui-btn-disabled');
+    }
+
+    function collectBatchLevels(){
+        var levels = [];
+        $('.batch-level:checked').each(function(){
+            levels.push(Number($(this).val()));
+        });
+        return levels;
+    }
+
+    function startBatchUpdate(job){
+        var levels = job ? (job.levels || []) : collectBatchLevels();
+        if(levels.length === 0){
+            layer.msg('请至少选择一个更新层级', {icon: 0});
+            return;
+        }
+        var onlyMissing = job ? !!job.onlyMissing : $('#batchOnlyMissing').prop('checked');
+        var qps = job ? normalizeBatchQps(job.qps) : normalizeBatchQps($('#batchQps').val());
+
+        batchState = createBatchState(levels, onlyMissing, qps);
+        if(job){
+            batchState.cursor = job.cursor || '';
+            batchState.requestCursor = job.cursor || '';
+            batchState.total = job.total || 0;
+            batchState.processed = job.processed || 0;
+            batchState.success = job.success || 0;
+            batchState.fail = job.fail || 0;
+            appendBatchLog('从上次进度继续：已处理 ' + batchState.processed
+                + ' 条，请求频率 ' + batchState.qps + ' 次/秒');
+        }else{
+            clearBatchJob();
+            $('#batchLog').html('');
+            appendBatchLog('开始批量更新，层级：' + levels.join(',')
+                + (onlyMissing ? '，仅补缺失坐标' : '，全部覆盖')
+                + '，请求频率 ' + batchState.qps + ' 次/秒');
+        }
+
+        $('#batchResumeBtn').hide();
+        batchState.running = true;
+        syncBatchButtons();
+        updateBatchProgress();
+        saveBatchJob();
+        batchSchedule();
+    }
+
+    // 按页拉取待更新列表（游标分页，避免翻页时数据变化导致错位）
+    function batchLoadPage(){
+        if(!batchState || batchState.loading || batchState.stopped || !batchState.hasMore){
+            return;
+        }
+        batchState.loading = true;
+        $.get('/api/admin/cmspro/region/coordinate-candidates', {
+            levels: batchState.levels.join(','),
+            only_missing: batchState.onlyMissing ? 1 : 0,
+            after_code: batchState.requestCursor,
+            limit: 100
+        }, function(res){
+            batchState.loading = false;
+            if(res.code !== 0 || !res.data){
+                appendBatchLog('获取待更新列表失败：' + (res.message || '未知错误'));
+                batchState.stopped = true;
+                batchFinish();
+                return;
+            }
+            var data = res.data;
+            if(data.total !== null && data.total !== undefined){
+                batchState.total = data.total;
+            }
+            batchState.hasMore = !!data.has_more;
+            if(data.next_cursor){
+                batchState.requestCursor = data.next_cursor;
+            }
+            if(data.items && data.items.length){
+                batchState.queue = batchState.queue.concat(data.items);
+            }
+            updateBatchProgress();
+            batchSchedule();
+        }).fail(function(){
+            batchState.loading = false;
+            appendBatchLog('获取待更新列表请求失败，请检查登录状态或网络');
+            batchState.stopped = true;
+            batchFinish();
+        });
+    }
+
+    // 调度器：控制并发，队列空时补页，全部完成后收尾
+    function batchSchedule(){
+        if(!batchState || batchState.finished){
+            return;
+        }
+        if(batchState.inflight >= BATCH_CONCURRENCY){
+            return;
+        }
+        if(batchState.paused){
+            return;
+        }
+        if(batchState.stopped){
+            if(batchState.inflight === 0){
+                batchFinish();
+            }
+            return;
+        }
+        if(!batchState.running){
+            return;
+        }
+        if(batchState.queue.length === 0){
+            // 本页全部处理完才推进断点游标，避免中断后漏掉未处理项
+            if(batchState.inflight > 0){
+                return;
+            }
+            if(batchState.hasMore){
+                batchState.cursor = batchState.requestCursor;
+                saveBatchJob();
+                batchLoadPage();
+            }else{
+                batchFinish();
+            }
+            return;
+        }
+
+        // 请求频率限速：按 QPS 换算最小发起间隔，未到时间则延迟调度
+        var interval = Math.ceil(1000 / batchState.qps);
+        var wait = batchState.lastSentAt + interval - Date.now();
+        if(wait > 0){
+            if(!batchState.scheduleTimer){
+                batchState.scheduleTimer = setTimeout(function(){
+                    batchState.scheduleTimer = null;
+                    batchSchedule();
+                }, wait);
+            }
+            return;
+        }
+        batchState.lastSentAt = Date.now();
+
+        var item = batchState.queue.shift();
+        batchState.inflight++;
+        resolveBatchItem(item, 0, function(){
+            batchState.inflight--;
+            batchState.processed++;
+            updateBatchProgress();
+            if(batchState.processed % BATCH_WRITE_SIZE === 0){
+                flushBatchWrites();
+                saveBatchJob();
+            }
+            batchSchedule();
+        });
+    }
+
+    // 单条地址解析，失败自动重试 2 次
+    function resolveBatchItem(item, retry, done){
+        if(batchState.stopped){
+            done();
+            return;
+        }
+        var geocoder = getBaiduGeocoder();
+        if(!geocoder){
+            batchState.fail++;
+            appendBatchLog('百度地图 JSAPI 未就绪，已停止批量任务');
+            batchState.stopped = true;
+            done();
+            return;
+        }
+        geocoder.getPoint(item.address, function(point){
+            if(!point){
+                if(retry < 2){
+                    setTimeout(function(){
+                        resolveBatchItem(item, retry + 1, done);
+                    }, 400);
+                    return;
+                }
+                batchState.fail++;
+                appendBatchLog('未解析到坐标：' + item.address);
+                done();
+                return;
+            }
+            batchState.pendingWrites.push({
+                code: item.code,
+                lng: point.lng,
+                lat: point.lat
+            });
+            if(batchState.pendingWrites.length >= BATCH_WRITE_SIZE){
+                flushBatchWrites();
+            }
+            done();
+        }, item.city || '');
+    }
+
+    // 批量写库，减少请求次数
+    function flushBatchWrites(callback){
+        if(!batchState || batchState.pendingWrites.length === 0){
+            if(callback){
+                callback();
+            }
+            return;
+        }
+        var items = batchState.pendingWrites.splice(0, batchState.pendingWrites.length);
+        $.ajax({
+            url: '/api/admin/cmspro/region/update-coordinate-batch',
+            type: 'POST',
+            contentType: 'application/json',
+            dataType: 'json',
+            data: JSON.stringify({items: items}),
+            success: function(res){
+                if(res.code === 0 && res.data){
+                    batchState.success += res.data.success_count || 0;
+                    batchState.fail += res.data.fail_count || 0;
+                    $.each(res.data.failures || [], function(_, failure){
+                        appendBatchLog('写库失败：' + failure.code + '（' + failure.message + '）');
+                    });
+                }else{
+                    batchState.fail += items.length;
+                    appendBatchLog('批量写库失败：' + (res.message || '未知错误'));
+                }
+            },
+            error: function(){
+                batchState.fail += items.length;
+                appendBatchLog('批量写库请求失败，请检查登录状态或网络');
+            },
+            complete: function(){
+                updateBatchProgress();
+                saveBatchJob();
+                if(callback){
+                    callback();
+                }
+            }
+        });
+    }
+
+    function batchFinish(){
+        if(!batchState || batchState.finishing || batchState.finished){
+            return;
+        }
+        batchState.finishing = true;
+        batchState.running = false;
+        if(batchState.scheduleTimer){
+            clearTimeout(batchState.scheduleTimer);
+            batchState.scheduleTimer = null;
+        }
+
+        flushBatchWrites(function(){
+            batchState.finished = true;
+            batchState.finishing = false;
+            updateBatchProgress();
+            if(batchState.stopped){
+                saveBatchJob();
+                appendBatchLog('批量更新已停止：成功 ' + batchState.success + ' 条，失败 '
+                    + batchState.fail + ' 条，下次可从断点继续');
+            }else{
+                clearBatchJob();
+                appendBatchLog('批量更新完成：成功 ' + batchState.success + ' 条，失败 '
+                    + batchState.fail + ' 条');
+            }
+            batchState.finishing = false;
+            syncBatchButtons();
+            table.reload('regionTable');
+            refreshStats();
+            // 批量结果可能覆盖当前单选区划，同步刷新其库中经纬度
+            updateCoordPreview();
+        });
+    }
+
+    // 打开「更新坐标」弹窗
+    $('#updateCoordBtn').on('click', function(){
+        if(!coordBaiduAk){
+            layer.msg('未配置百度浏览器端 AK，请先在「地图」应用中填写', {icon: 2, time: 4000});
+            return;
+        }
+        var html = ''
+            + '<div class="coord-dialog">'
+            + '  <div class="coord-tabs">'
+            + '    <div class="coord-tab active" data-pane="single">单个更新</div>'
+            + '    <div class="coord-tab" data-pane="batch">批量自动更新</div>'
+            + '  </div>'
+            + '  <div class="coord-pane active" id="coordPaneSingle">'
+            + '    <div class="coord-tip">选择完整区划路径后解析地址，保存时自动转换为 GCJ-02，'
+            + '与本地数据坐标系保持一致。</div>'
+            + '    <div class="coord-row">'
+            + '      <select class="coord-select" id="coordSel1"></select>'
+            + '      <i class="fa fa-angle-right coord-arrow"></i>'
+            + '      <select class="coord-select" id="coordSel2" disabled></select>'
+            + '      <i class="fa fa-angle-right coord-arrow"></i>'
+            + '      <select class="coord-select" id="coordSel3" disabled></select>'
+            + '      <i class="fa fa-angle-right coord-arrow"></i>'
+            + '      <select class="coord-select" id="coordSel4" disabled></select>'
+            + '    </div>'
+            + '    <div class="coord-info">'
+            + '      <div><span class="coord-label">目标区划：</span><span id="coordTarget">-</span></div>'
+            + '      <div><span class="coord-label">百度请求地址：</span><span id="coordAddress">-</span></div>'
+            + '      <div><span class="coord-label">当前经纬度（GCJ-02）：</span><span id="coordLonLat">-</span></div>'
+            + '      <div><span class="coord-label">执行结果：</span><span id="coordResult">-</span></div>'
+            + '    </div>'
+            + '    <div style="margin-top:14px;">'
+            + '      <button class="layui-btn" id="coordUpdateBtn"><i class="fa fa-map-marker"></i> 获取坐标并更新</button>'
+            + '    </div>'
+            + '  </div>'
+            + '  <div class="coord-pane" id="coordPaneBatch">'
+            + '    <div class="coord-tip">批量更新会按区划顺序逐条请求百度地图解析地址并写库。'
+            + '街道/乡镇数据量较大，请保持页面打开；支持暂停、停止与断点续跑。</div>'
+            + '    <div class="batch-row">'
+            + '      <span>更新层级：</span>'
+            + '      <label><input type="checkbox" class="batch-level" value="1" checked> 省/直辖市</label>'
+            + '      <label><input type="checkbox" class="batch-level" value="2" checked> 市</label>'
+            + '      <label><input type="checkbox" class="batch-level" value="3" checked> 区/县</label>'
+            + '      <label><input type="checkbox" class="batch-level" value="4" checked> 街道/乡镇</label>'
+            + '      <label><input type="checkbox" class="batch-level" value="5"> 村/社区</label>'
+            + '    </div>'
+            + '    <div class="batch-row">'
+            + '      <label><input type="checkbox" id="batchOnlyMissing" checked> 仅更新缺失坐标（跳过已有经纬度）</label>'
+            + '    </div>'
+            + '    <div class="batch-row">'
+            + '      <span>请求频率：</span>'
+            + '      <label>每秒 <input type="number" id="batchQps" class="batch-qps-input" min="1" max="10" step="1" value="3"> 条</label>'
+            + '      <span class="batch-qps-tip">QPS 越低越稳，建议 1~3</span>'
+            + '    </div>'
+            + '    <div class="batch-actions">'
+            + '      <button class="layui-btn layui-btn-sm" id="batchStartBtn">开始更新</button>'
+            + '      <button class="layui-btn layui-btn-sm layui-btn-primary" id="batchPauseBtn" disabled>暂停</button>'
+            + '      <button class="layui-btn layui-btn-sm layui-btn-danger" id="batchStopBtn" disabled>停止</button>'
+            + '      <button class="layui-btn layui-btn-sm layui-btn-normal" id="batchResumeBtn" style="display:none;">继续上次任务</button>'
+            + '    </div>'
+            + '    <div class="batch-bar"><div class="batch-bar-inner" id="batchBar"></div></div>'
+            + '    <div class="batch-stats" id="batchStats">尚未开始</div>'
+            + '    <div class="batch-log" id="batchLog"></div>'
+            + '  </div>'
+            + '  <div class="coord-footer">'
+            + '    <button class="layui-btn layui-btn-primary" id="coordCloseBtn">关闭</button>'
+            + '  </div>'
+            + '</div>';
+
+        layer.open({
+            type: 1,
+            title: '更新坐标（开发模式）',
+            area: ['820px', 'auto'],
+            shadeClose: false,
+            content: html,
+            success: function(layero, index){
+                initCoordDialog();
+
+                // 单个 / 批量页签切换
+                $('.coord-tab').on('click', function(){
+                    var pane = $(this).data('pane');
+                    $('.coord-tab').removeClass('active');
+                    $(this).addClass('active');
+                    $('.coord-pane').removeClass('active');
+                    $('#coordPane' + (pane === 'single' ? 'Single' : 'Batch')).addClass('active');
+                });
+
+                // 单个更新级联
+                [1, 2, 3, 4].forEach(function(depth){
+                    $('#coordSel' + depth).on('change', function(){
+                        var $option = $(this).find('option:selected');
+                        var code = $(this).val();
+                        coordPath = coordPath.slice(0, depth - 1);
+                        resetCoordSelects(depth + 1);
+                        if(code){
+                            coordPath.push({
+                                code: code,
+                                name: $option.text(),
+                                level: Number($option.attr('data-level'))
+                            });
+                            loadCoordChildren(depth + 1, code);
+                        }
+                        updateCoordPreview();
+                    });
+                });
+                $('#coordUpdateBtn').on('click', doCoordUpdate);
+
+                // 批量自动更新
+                initBatchPanel();
+                // 请求频率调整：运行中即时生效，未运行时同步到断点任务
+                $('#batchQps').on('change', function(){
+                    var qps = normalizeBatchQps($(this).val());
+                    $(this).val(qps);
+                    if(batchState && batchState.running){
+                        batchState.qps = qps;
+                        appendBatchLog('请求频率已调整为 ' + qps + ' 次/秒');
+                        saveBatchJob();
+                        return;
+                    }
+                    var job = readBatchJob();
+                    if(job){
+                        job.qps = qps;
+                        try{
+                            localStorage.setItem(BATCH_STORE_KEY, JSON.stringify(job));
+                        }catch(e){
+                            // localStorage 不可用时忽略
+                        }
+                    }
+                });
+                $('#batchStartBtn').on('click', function(){
+                    startBatchUpdate(null);
+                });
+                $('#batchResumeBtn').on('click', function(){
+                    var job = readBatchJob();
+                    if(!job){
+                        layer.msg('未找到可继续的任务', {icon: 0});
+                        return;
+                    }
+                    startBatchUpdate(job);
+                });
+                $('#batchPauseBtn').on('click', function(){
+                    if(!batchState || !batchState.running){
+                        return;
+                    }
+                    batchState.paused = !batchState.paused;
+                    appendBatchLog(batchState.paused ? '已暂停，等待在途请求完成' : '已继续执行');
+                    syncBatchButtons();
+                    updateBatchProgress();
+                    saveBatchJob();
+                    if(!batchState.paused){
+                        batchSchedule();
+                    }
+                });
+                $('#batchStopBtn').on('click', function(){
+                    if(!batchState || !batchState.running){
+                        return;
+                    }
+                    layer.confirm('确定停止批量更新吗？已处理的坐标会保留，下次可继续。', {icon: 3}, function(confirmIndex){
+                        layer.close(confirmIndex);
+                        batchState.stopped = true;
+                        batchState.paused = false;
+                        batchState.queue = [];
+                        appendBatchLog('正在停止，等待在途请求完成...');
+                        if(batchState.inflight === 0){
+                            batchFinish();
+                        }
+                    });
+                });
+                $('#coordCloseBtn').on('click', function(){
+                    if(batchState && batchState.running){
+                        layer.msg('批量任务进行中，请先点击「停止」再关闭', {icon: 0, time: 3000});
+                        return;
+                    }
+                    layer.close(index);
+                });
+            },
+            cancel: function(){
+                if(batchState && batchState.running){
+                    layer.msg('批量任务进行中，请先点击「停止」再关闭', {icon: 0, time: 3000});
+                    return false;
+                }
+            }
         });
     });
 
@@ -1103,9 +1912,9 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                 '<b>发现官方区划数据新版本</b><br>' +
                 '最新版本：<b>' + info.version + '</b>（本地：' + (info.local_version || '未同步') + '）<br>' +
                 '发布时间：' + (info.release_time || '-') + '<br>' +
-                '记录总数：<b>' + info.region_count + '</b> 条（省 ' + (stats.province || 0) + ' / 市 ' + (stats.city || 0) + ' / 区县 ' + (stats.district || 0) + ' / 街道 ' + (stats.street || 0) + '）<br>' +
+                '记录总数：<b>' + info.region_count + '</b> 条（省 ' + (stats.province || 0) + ' / 市 ' + (stats.city || 0) + ' / 区县 ' + (stats.district || 0) + ' / 街道 ' + (stats.street || 0) + ' / 村 ' + (stats.village || 0) + '）<br>' +
                 '更新说明：' + (info.changelog || '无') + '<br><br>' +
-                '<span style="color:#e6a23c;">⚠ 同步将<b style="color:#e6a23c;">全量替换</b>本地区划数据（本地手工修改会被覆盖），完成后自动重建层级关系与缓存，预计 1 分钟内完成。确定同步吗？</span>' +
+                '<span style="color:#e6a23c;">⚠ 同步将<b style="color:#e6a23c;">全量替换</b>本地区划数据（本地手工修改会被覆盖），完成后自动重建层级关系与缓存。数据量较大时可能需要数分钟，确定同步吗？</span>' +
                 '</div>';
             layer.confirm(html, {title: '在线同步官方数据', btn: ['开始同步', '取消'], area: '540px'}, function(index){
                 layer.close(index);

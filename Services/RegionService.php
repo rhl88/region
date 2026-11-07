@@ -2,6 +2,7 @@
 
 namespace App\Apps\CmsproRegion\Services;
 
+use App\Apps\CmsproMaps\Services\CoordinateConverter;
 use App\Apps\CmsproRegion\Models\Region;
 use App\Apps\CmsproRegion\Models\RegionClosure;
 use Illuminate\Support\Collection;
@@ -44,7 +45,7 @@ class RegionService
     public function getChildren(string $parentCode): Collection
     {
         $data = Cache::remember(
-            "{$this->cachePrefix}:children:{$parentCode}",
+            "{$this->cachePrefix}:v{$this->cacheVersion()}:children:{$parentCode}",
             $this->cacheTtl,
             function () use ($parentCode) {
                 $parent = Region::where('code', $parentCode)->first();
@@ -62,12 +63,207 @@ class RegionService
     }
 
     /**
+     * 获取单个区划当前库中的经纬度（供开发模式「单个更新」实时展示）
+     *
+     * 直接查库不走缓存，确保更新坐标后立即反映最新值。
+     */
+    public function getCoordinate(string $code): ?array
+    {
+        $region = Region::where('code', $code)->first(['code', 'name', 'level', 'lon', 'lat']);
+        if (! $region) {
+            return null;
+        }
+
+        return [
+            'code' => $region->code,
+            'name' => $region->name,
+            'level' => $region->level,
+            'lon' => $region->lon,
+            'lat' => $region->lat,
+        ];
+    }
+
+    /**
+     * 按百度地图 BD-09 坐标更新区划经纬度（落库前转换为 GCJ-02）
+     *
+     * 应用内坐标统一为 GCJ-02，百度 JSAPI 正地址解析返回 BD-09，
+     * 因此写库前复用「地图」应用的坐标转换能力，避免同一份数据混用两套坐标系。
+     *
+     * @return array{success: bool, message: string, data?: array}
+     */
+    public function updateBaiduCoordinate(string $code, float $lng, float $lat): array
+    {
+        $region = Region::where('code', $code)->first();
+        if (! $region) {
+            return ['success' => false, 'message' => '区划不存在：' . $code];
+        }
+
+        if (! class_exists(CoordinateConverter::class)) {
+            return ['success' => false, 'message' => '依赖的「地图」应用未安装，无法完成 BD-09 到 GCJ-02 坐标转换'];
+        }
+
+        try {
+            CoordinateConverter::assertValid($lng, $lat);
+            $gcj = CoordinateConverter::bd09ToGcj02($lng, $lat);
+        } catch (\InvalidArgumentException $e) {
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+
+        $region->lon = round($gcj['lng'], 6);
+        $region->lat = round($gcj['lat'], 6);
+        $region->save();
+
+        return [
+            'success' => true,
+            'message' => '坐标更新成功',
+            'data' => [
+                'code' => $region->code,
+                'name' => $region->name,
+                'level' => $region->level,
+                'lon' => $region->lon,
+                'lat' => $region->lat,
+                'baidu_lon' => $lng,
+                'baidu_lat' => $lat,
+            ],
+        ];
+    }
+
+    /**
+     * 获取批量更新坐标的候选区划（按 code 升序游标分页）
+     *
+     * @param  int[]  $levels  层级列表（1-4）
+     * @param  bool  $onlyMissing  仅返回缺少经纬度的区划
+     * @param  string  $afterCode  游标：只返回 code 大于该值的区划
+     * @param  int  $limit  本页条数
+     * @return array{items: array, next_cursor: string, has_more: bool, total: int|null}
+     */
+    public function getCoordinateCandidates(
+        array $levels,
+        bool $onlyMissing,
+        string $afterCode,
+        int $limit
+    ): array {
+        $levels = array_values(array_intersect([1, 2, 3, 4, 5], array_map('intval', $levels)));
+        if (empty($levels)) {
+            // 默认不含村级：村级数据量达数十万条且地理编码精度有限，需用户显式勾选
+            $levels = [1, 2, 3, 4];
+        }
+
+        $buildQuery = function () use ($levels, $onlyMissing, $afterCode) {
+            $query = Region::where('status', 1)
+                ->whereIn('level', $levels)
+                ->orderBy('code');
+
+            if ($onlyMissing) {
+                $query->where(function ($q) {
+                    $q->whereNull('lon')->orWhereNull('lat');
+                });
+            }
+
+            if ($afterCode !== '') {
+                $query->where('code', '>', $afterCode);
+            }
+
+            return $query;
+        };
+
+        $rows = $buildQuery()->limit($limit + 1)->get(['id', 'code', 'name', 'level', 'lon', 'lat']);
+        $hasMore = $rows->count() > $limit;
+        $rows = $rows->take($limit);
+
+        // 仅在首屏统计总量，避免翻页时重复全表 count
+        $total = $afterCode === '' ? $buildQuery()->count() : null;
+
+        return [
+            'items' => $this->buildCoordinateCandidateItems($rows),
+            'next_cursor' => $rows->isNotEmpty() ? (string) $rows->last()->code : $afterCode,
+            'has_more' => $hasMore,
+            'total' => $total,
+        ];
+    }
+
+    /**
+     * 组装候选区划的完整地址，供百度地理编码使用
+     *
+     * @param  Collection  $rows
+     */
+    protected function buildCoordinateCandidateItems(Collection $rows): array
+    {
+        if ($rows->isEmpty()) {
+            return [];
+        }
+
+        // 一次批量取出所有祖先，避免逐条查询产生 N+1
+        $ancestorRows = DB::table('app_cmspro_region_closure as c')
+            ->join('app_cmspro_region_region as r', 'r.id', '=', 'c.ancestor')
+            ->whereIn('c.descendant', $rows->pluck('id')->all())
+            ->where('c.depth', '>', 0)
+            ->orderByDesc('c.depth')
+            ->get(['c.descendant', 'r.name', 'r.level']);
+
+        $ancestorMap = [];
+        foreach ($ancestorRows as $ancestor) {
+            $ancestorMap[(int) $ancestor->descendant][] = [
+                'name' => $ancestor->name,
+                'level' => (int) $ancestor->level,
+            ];
+        }
+
+        $items = [];
+        foreach ($rows as $row) {
+            $nodes = $ancestorMap[(int) $row->id] ?? [];
+            $nodes[] = ['name' => $row->name, 'level' => (int) $row->level];
+            // 闭包表按 depth 倒序返回（近→远），地址需按省→市→区→街道排列
+            usort($nodes, fn ($a, $b) => $a['level'] <=> $b['level']);
+
+            $items[] = [
+                'code' => (string) $row->code,
+                'name' => $row->name,
+                'level' => (int) $row->level,
+                'address' => $this->buildCoordinateAddress($nodes),
+                'city' => $nodes[0]['name'] ?? '',
+                'lon' => $row->lon,
+                'lat' => $row->lat,
+            ];
+        }
+
+        return $items;
+    }
+
+    /**
+     * 按「省+市 空格 区县+街道」规则组装百度地理编码请求地址
+     *
+     * 例：浙江省嘉兴市 秀洲区嘉北街道
+     *
+     * @param  array<int, array{name: string, level: int}>  $nodes  按层级升序排列的路径节点
+     */
+    protected function buildCoordinateAddress(array $nodes): string
+    {
+        $splitIndex = -1;
+        foreach ($nodes as $index => $node) {
+            if ($node['level'] >= Region::LEVEL_DISTRICT) {
+                $splitIndex = $index;
+                break;
+            }
+        }
+
+        $names = array_column($nodes, 'name');
+        if ($splitIndex <= 0) {
+            return implode('', $names);
+        }
+
+        return implode('', array_slice($names, 0, $splitIndex))
+            . ' '
+            . implode('', array_slice($names, $splitIndex));
+    }
+
+    /**
      * 根据区划 code 获取完整路径（从省到当前节点）
      */
     public function getPath(string $code): Collection
     {
         $data = Cache::remember(
-            "{$this->cachePrefix}:path:{$code}",
+            "{$this->cachePrefix}:v{$this->cacheVersion()}:path:{$code}",
             $this->cacheTtl,
             function () use ($code) {
                 $node = Region::where('code', $code)->first();
@@ -127,6 +323,7 @@ class RegionService
             'city' => $stats[Region::LEVEL_CITY] ?? 0,
             'district' => $stats[Region::LEVEL_DISTRICT] ?? 0,
             'street' => $stats[Region::LEVEL_STREET] ?? 0,
+            'village' => $stats[Region::LEVEL_VILLAGE] ?? 0,
             'total' => array_sum($stats),
         ];
     }
@@ -1204,41 +1401,41 @@ class RegionService
     /**
      * 完全重建闭包表
      * 删除所有闭包记录后，根据主表 parent_id 重新计算
-     * 使用分批读取+边算边插，避免内存溢出
+     *
+     * 村级数据纳入后节点总量达 59 万+、闭包记录约 290 万条，PHP 逐节点
+     * 上溯构建耗时 30 分钟以上（Web 同步必然超时），改为 SQL 迭代下推：
+     * - 先批量插入全部自身闭包（depth = 0）
+     * - 再按深度逐层展开：第 d 层由第 d-1 层闭包沿 parent_id 上溯一级生成，
+     *   每层一条 INSERT...SELECT 全程在库内完成，PHP 侧零数据搬运
+     * - 最大闭包深度 = 最大层级 - 1（五级树为 4），省直辖等短链树天然少插
      */
     public function rebuildClosureTable(): void
     {
         // 清空闭包表
         DB::table('app_cmspro_region_closure')->delete();
 
-        // 一次性加载所有节点的 id → parent_id 映射
-        $parentMap = DB::table('app_cmspro_region_region')
-            ->orderBy('level')
-            ->get(['id', 'parent_id'])
-            ->pluck('parent_id', 'id')
-            ->toArray();
+        // 第 0 层：所有节点的自身闭包
+        DB::affectingStatement(
+            'INSERT INTO `app_cmspro_region_closure` (`ancestor`, `descendant`, `depth`) '
+            . 'SELECT `id`, `id`, 0 FROM `app_cmspro_region_region`'
+        );
 
-        // 构建闭包记录
-        $closureBatch = [];
-        foreach ($parentMap as $nodeId => $parentId) {
-            // 自身闭包
-            $closureBatch[] = ['ancestor' => $nodeId, 'descendant' => $nodeId, 'depth' => 0];
+        // 逐层展开祖先链：第 depth 层 = 第 depth-1 层闭包的祖先再上溯一级父节点
+        $maxDepth = max(0, (int) DB::table('app_cmspro_region_region')->max('level') - 1);
+        for ($depth = 1; $depth <= $maxDepth; $depth++) {
+            $inserted = DB::affectingStatement(
+                'INSERT INTO `app_cmspro_region_closure` (`ancestor`, `descendant`, `depth`) '
+                . 'SELECT `r`.`parent_id`, `c`.`descendant`, `c`.`depth` + 1 '
+                . 'FROM `app_cmspro_region_closure` `c` '
+                . 'JOIN `app_cmspro_region_region` `r` ON `r`.`id` = `c`.`ancestor` '
+                . 'WHERE `c`.`depth` = ? AND `r`.`parent_id` > 0',
+                [$depth - 1]
+            );
 
-            // 祖先链
-            $currentId = $parentId;
-            $depth = 1;
-            $visited = [$nodeId => true];
-            while ($currentId > 0 && !isset($visited[$currentId])) {
-                $closureBatch[] = ['ancestor' => $currentId, 'descendant' => $nodeId, 'depth' => $depth];
-                $visited[$currentId] = true;
-                $depth++;
-                $currentId = $parentMap[$currentId] ?? 0;
+            // 该层无新增记录说明祖先链已全部展开
+            if ($inserted === 0) {
+                break;
             }
-        }
-
-        // 分批插入
-        foreach (array_chunk($closureBatch, 1000) as $chunk) {
-            DB::table('app_cmspro_region_closure')->insert($chunk);
         }
     }
 
@@ -1323,18 +1520,28 @@ class RegionService
             "{$this->cachePrefix}:provinces",
             "{$this->cachePrefix}:cascader:3",
             "{$this->cachePrefix}:cascader:4",
+            "{$this->cachePrefix}:cascader:5",
         ];
 
         foreach ($keys as $key) {
             Cache::forget($key);
         }
 
-        // 清除所有层级的 children 和 path 动态缓存
-        $regions = Region::get(['code']);
-        foreach ($regions as $region) {
-            Cache::forget("{$this->cachePrefix}:children:{$region->code}");
-            Cache::forget("{$this->cachePrefix}:path:{$region->code}");
-        }
+        // children/path 动态缓存通过自增版本号整体失效（O(1)）：
+        // 版本号自增后旧命名空间的键立即不可读，旧键由 TTL（24h）自然过期回收，
+        // 避免村级数据量下逐键删除的百万次缓存调用与 Eloquent 全量实例化
+        Cache::increment("{$this->cachePrefix}:version");
+    }
+
+    /**
+     * 动态缓存键（children/path）的版本号
+     *
+     * 版本号不存在时返回 0（初始命名空间 v0），与 clearCache 的
+     * Cache::increment 自增语义对齐，避免首次清除时版本号错位。
+     */
+    protected function cacheVersion(): int
+    {
+        return (int) Cache::get("{$this->cachePrefix}:version", 0);
     }
 
     // ========== 民政部官方API导入方法 ==========

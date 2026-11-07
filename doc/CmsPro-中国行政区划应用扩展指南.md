@@ -1,6 +1,6 @@
 # CmsPro 中国行政区划应用扩展指南
 
-> 版本：1.8.0 | 更新日期：2026-11-06
+> 版本：1.9.0 | 更新日期：2026-11-07
 > 适用系统：CmsPro v5.0.0+
 > 应用ID：`cmspro.region`
 
@@ -14,6 +14,7 @@
 
 - **三级联动**：默认支持省/市/区县三级区划数据（约3200+条，含港澳台）
 - **四级可选**：可配置开启街道/乡镇级数据（约4万+条），按省份分步导入，避免超时
+- **五级可选**：支持行政村/社区级数据（约54万条，12位编码），经「在线同步官方数据」或「导入快照包」获取
 - **闭包表架构**：单表存储+闭包表加速，支持高效的层级路径查询
 - **三种引用方式**：依赖注入、Filter钩子、API接口，灵活适配不同场景
 - **缓存机制**：查询结果自动缓存24小时，数据更新时自动清除；街道数据支持本地文件缓存
@@ -689,7 +690,7 @@ $snapshot = $snapshotService->export('20261106001');
 //     'file_name' => 'cmspro-region-data-20261106001.zip',
 //     'version' => '20261106001',
 //     'count' => 47362,            // 导出记录总数
-//     'stats' => [...],            // 四级统计
+//     'stats' => [...],            // 五级统计
 //     'file_size' => 2103245,      // 快照包字节数
 //     'checksum' => 'sha256...',   // 快照包 SHA-256 摘要
 // ]
@@ -700,9 +701,9 @@ $snapshot = $snapshotService->export('20261106001');
 | 文件 | 内容 |
 |------|------|
 | `regions.json` | 全量记录数组 `[{code, name, level, parent_code, status, lon, lat}, ...]`，按 level + code 排序（父级先于子级）；顶级记录 `parent_code` 为 `'0'`；status 0（禁用）与 1（启用）全量导出；无坐标记录 `lon`/`lat` 为 null |
-| `meta.json` | `{version, count, stats: {province, city, district, street}, generated_at（Y-m-d H:i:s）, format: "code,name,level,parent_code,status,lon,lat"}` |
+| `meta.json` | `{version, count, stats: {province, city, district, street, village}, generated_at（Y-m-d H:i:s）, format: "code,name,level,parent_code,status,lon,lat"}` |
 
-**导出规则**：库中须已有省级（level=1）数据；单次上限 20 万条（与版本服务器一致）；版本号仅允许字母/数字/点/下划线/连字符（≤32 位）；导出流式分块（1000 条/块）避免大库内存溢出；调用方负责下载后删除快照包文件。
+**导出规则**：库中须已有省级（level=1）数据；单次上限 60 万条（与版本服务器一致）；版本号仅允许字母/数字/点/下划线/连字符（≤32 位）；导出流式分块（1000 条/块）避免大库内存溢出；调用方负责下载后删除快照包文件。
 
 ### 4.18 RegionDataSyncService 在线同步官方数据与快照包导入服务
 
@@ -723,7 +724,7 @@ $info = $syncService->checkUpdate();
 //     'available' => true,            // 版本服务器可用且有已发布版本
 //     'version' => '20261106001',     // 远端最新版本
 //     'region_count' => 47362,        // 远端记录总数
-//     'stats' => [...],               // 四级统计
+//     'stats' => [...],               // 五级统计
 //     'local_version' => '',          // 本地已同步版本（空=从未同步）
 //     'need_update' => true,          // 是否需要更新
 //     ...
@@ -757,11 +758,14 @@ $progress = $syncService->getProgress('sync_xxx');
 | ① 检查更新 | `GET {apps.market.api_url}/api/versionsvr/region-data/latest`；本地已是最新且未指定版本时跳过下载 |
 | ② 下载校验 | 下载 `region-data/download/{version}`，SHA-256 与版本服务器声明值比对，不符拒绝 |
 | ③ 解包 | 防 Zip Slip，兼容包内多一层包裹目录，读 regions.json |
-| ④ 契约校验 | 与导出端/版本服务器同一套规则（必填/code 唯一≤9 位/level 1-4/parent 引用闭环/省级必含/上限 20 万），**进事务前执行** |
-| ⑤ 单事务落库 | 全删（DELETE，MySQL 下 TRUNCATE 会隐式提交）→ 按 level 分层 chunk(500) 批量插入（parent_code → parent_id，父级先于子级）→ 闭包表全量重建 → 事务提交 |
+| ④ 契约校验 | 与导出端/版本服务器同一套规则（必填/code 唯一≤12 位/level 1-5/parent 引用闭环/省级必含/上限 60 万），**流式执行**：校验结果写 JSONL 中间产物，**进事务前执行**，非法数据直接拒绝 |
+| ⑤ 单事务落库 | 全删（DELETE，MySQL 下 TRUNCATE 会隐式提交）→ 按 level 分层多遍扫描 JSONL 批量插入（2000 条/批，parent_code → parent_id，父级先于子级，层间 code 映射 `chunkById` 流式收集）→ 闭包表 SQL 化重建（`INSERT...SELECT` 逐层展开祖先链）→ 事务提交 |
 | ⑥ 后处理 | 清缓存（`RegionService::clearCache()`）→ 记版本（配置项 `app_cmspro_region_data_sync_version`；配置组「数据同步设置」由框架在应用安装/升级时落库，**组缺失时 `firstOrCreate` 自愈创建**，确保版本号一定写入）→ 清理旧包（保留最近 3 个） |
 
-**性能基准**（sqlite 内存库，49334 条四级区划 + 19.3 万条闭包记录）：契约校验 0.73s + 全量替换落库 5.11s ≈ **5.84s**。
+**性能基准**：
+
+- 四级数据包（sqlite 内存库实测，49334 条四级区划 + 19.3 万条闭包记录）：契约校验 0.73s + 全量替换落库 5.11s ≈ **5.84s**。
+- 五级村级数据包（MySQL 8 实测，584,265 条 + 284 万条闭包记录）：全链路流式化，512M 内存限制下**内存峰值仅 86MB**；流式校验约 3 分钟 + 插入 58 万条约 4 分钟 + 闭包重建约 1 分钟（SQL 化后 58 万节点），五级全量同步耗时约 10 分钟量级，建议低峰期执行。
 
 ***
 
@@ -892,9 +896,9 @@ if (!$region) {
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | id | bigint unsigned | 主键ID |
-| code | varchar(9) | 行政区划代码（唯一索引），省/市/区县6位，街道9位 |
+| code | varchar(12) | 行政区划代码（唯一索引），省/市/区县6位，街道9位，村/社区12位 |
 | name | varchar(50) | 区划名称 |
-| level | tinyint unsigned | 层级：1-省 2-市 3-区县 4-街道 |
+| level | tinyint unsigned | 层级：1-省 2-市 3-区县 4-街道 5-村/社区 |
 | parent_id | bigint unsigned | 父级ID，顶级为0 |
 | status | tinyint unsigned | 状态：0-禁用 1-启用 |
 | lon | decimal(10,7) | 经度（范围：-180 ~ 180），城市和区县级别可用 |
@@ -933,8 +937,8 @@ ORDER BY c.depth DESC;
 | 缓存键 | 内容 | 有效期 |
 |--------|------|--------|
 | `region:provinces` | 省份列表 | 24小时 |
-| `region:children:{code}` | 指定父级的子级列表 | 24小时 |
-| `region:path:{code}` | 指定区划的完整路径 | 24小时 |
+| `region:v{version}:children:{code}` | 指定父级的子级列表（带版本号） | 24小时 |
+| `region:v{version}:path:{code}` | 指定区划的完整路径（带版本号） | 24小时 |
 | `region:cascader:{level}` | 级联选择器数据 | 24小时 |
 
 缓存会在以下操作后自动清除：
@@ -942,18 +946,20 @@ ORDER BY c.depth DESC;
 - 街道数据按省份导入
 - 手动清除缓存（后台操作或调用 `clearCache()` 方法）
 
+> **动态缓存键版本化**：children/path 两类动态缓存键带版本号（`region:v{version}:...`）。`clearCache()` 清除固定键后自增缓存键 `region:version`（O(1)），旧版本命名空间的键立即不可读、由 TTL（24 小时）自然过期回收——避免村级数据量（58 万节点）下逐键删除的百万次缓存调用与 Eloquent 全量实例化内存开销。
+
 ***
 
 ## 八、注意事项
 
-1. **区划代码规则**：省/市/区县为6位数字编码（后4位为`0000`是省级，后2位为`00`是市级，其余为区县级），街道/乡镇为9位数字编码
+1. **区划代码规则**：省/市/区县为6位数字编码（后4位为`0000`是省级，后2位为`00`是市级，其余为区县级），街道/乡镇为9位数字编码，村/社区为12位数字编码
 2. **直辖市特殊处理**：北京、天津、上海、重庆的区县直接挂在省级下（无中间市级），`getChildren('110000')` 直接返回区县列表
 3. **应用依赖**：依赖行政区划服务的应用应在 `manifest.json` 中声明 `dependencies`
 4. **缓存一致性**：直接操作数据库修改区划数据后，需调用 `clearCache()` 清除缓存；街道数据缓存文件修改后需重新导入
 5. **差异化更新**：导入操作基于 `code` 匹配，新增插入、改名/升级更新、撤销禁用，保留已有 ID 不变
 6. **街道数据更新**：`importStreetByProvince()` 按省份差异化更新，支持改名、升级、撤销等场景；数据源来自民政部API，自动处理分页
 7. **服务单例**：`RegionService` 注册为单例，同一请求中多次调用共享实例
-8. **层级限制**：`getCascaderData()` 的 `maxLevel` 参数最大为4，超过4按4处理
+8. **层级限制**：`getCascaderData()` 的 `maxLevel` 参数最大为5（村/社区级），API 接口层超过5按5处理
 9. **数据更新**：区划数据来自中国国家地名信息库（[https://dmfw.mca.gov.cn/XzqhVersionPublish.html](https://dmfw.mca.gov.cn/XzqhVersionPublish.html)），点击「更新数据」按钮可对比API最新数据与本地数据的差异并更新；`Data/list.json` 和 `Data/code/` 目录为本地缓存文件
 10. **安装与导入分离**：安装应用仅创建数据库表，需在后台手动导入数据，避免安装超时
 11. **API调用频率**：街道数据导入时每处理一个区县暂停100ms，避免请求过快导致API限流
@@ -979,3 +985,4 @@ ORDER BY c.depth DESC;
 | 1.7.0 | 2026-11-06 | 开发团队 | 新增 `RegionDataSyncService` 在线同步官方数据服务（4.18 节，消费端）与「在线同步官方数据」后台按钮：从版本服务器在线同步官方区划数据，检查更新 → 下载 SHA-256 校验 → 解包（防 Zip Slip）→ 契约校验 → 单事务全量替换落库（全删 → 按 level 分层 chunk 批量插入 → 闭包表重建）→ 清缓存 → 记版本；五重安全网（校验和/前置契约/事务回滚/版本回退/重复跳过），任一步失败本地数据零影响；新增配置组「数据同步设置」；站点数据初始化从约 1 小时降至 1 分钟内（49334 条实测 5.84s） |
 | 1.7.2 | 2026-11-06 | 开发团队 | 在线同步体验修复（4.18 节，应用版本不变）：① `saveVersion()` 配置组缺失时 `firstOrCreate` 自愈建组，修复已同步但前端仍显示「未同步」；② 新增进度上报机制——`withProgressToken()` 链式设置令牌后 sync 各阶段经 Cache 写进度（生产 redis 跨进程共享），`getProgress()` 供 `GET sync-progress` 轮询，前端实时进度条替代静态提示；控制器长任务前 `session()->save()` 释放 session 锁避免轮询阻塞 |
 | 1.8.0 | 2026-11-06 | 开发团队 | 新增 `importFromSnapshot()` 快照包导入（4.18 节，站点间分享）：接收上传 ZIP（`POST import-snapshot`，zip ≤50MB），复用在线同步的解包（防 Zip Slip）/契约校验/单事务全量替换落库/进度上报链路；版本号取包内 meta.json（缺失回退 `snapshot-{YmdHis}`）；不做 SHA-256 校验（上传包无可信校验和来源），注意事项新增第 15 条「导入快照包为不可信上传」 |
+| 1.9.0 | 2026-11-07 | 开发团队 | 新增**行政村/社区五级数据**（应用 v1.5.0）：① code 字段扩容迁移 varchar(9)→varchar(12)；② 导出/导入/在线同步契约支持五级（level 1-5、code ≤12 位、上限放宽至 60 万条、stats 增 village，与版本服务器同步）；③ 同步链路流式化——数据包解包转存 regions.json、契约校验流式写 JSONL 中间产物、按层级分遍扫描批量插入（2000 条/批）、层间 code 映射 `chunkById` 流式收集，58.4 万条五级全量同步内存峰值 86MB（512M 限制，MySQL 实测）；④ 闭包表重建 SQL 化（`INSERT...SELECT` 逐层展开，58 万节点约 31 分钟 → 约 1 分钟）；⑤ `clearCache()` 版本号命名空间失效（七、缓存说明），children/path 动态缓存键带版本号、旧键由 TTL 自然过期 |

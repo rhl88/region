@@ -35,7 +35,13 @@ class RegionController extends Controller
     {
         $stats = $this->regionService->getStats();
 
-        return view('cmsproregion::Admin.index', compact('stats'));
+        // 开发模式（APP_DEV_MODE=true）下才提供「更新坐标」入口，并复用地图应用的浏览器端 AK
+        $devMode = (bool) config('app.dev_mode');
+        $baiduAk = $devMode && function_exists('cmspro_maps_config')
+            ? (string) cmspro_maps_config('baidu_js_ak', '')
+            : '';
+
+        return view('cmsproregion::Admin.index', compact('stats', 'devMode', 'baiduAk'));
     }
 
     /**
@@ -48,9 +54,11 @@ class RegionController extends Controller
 
         $hasLevel3 = ($stats['province'] > 0 && $stats['city'] > 0 && $stats['district'] > 0);
         $hasStreet = ($stats['street'] > 0);
+        // 村/社区（level=5）挂在街道下，无街道数据时村级选择器无意义
+        $hasVillage = ($hasStreet && $stats['village'] > 0);
         $hasGeo = ($geoStats['with_geo'] > 0);
 
-        return view('cmsproregion::Admin.demo', compact('stats', 'geoStats', 'hasLevel3', 'hasStreet', 'hasGeo'));
+        return view('cmsproregion::Admin.demo', compact('stats', 'geoStats', 'hasLevel3', 'hasStreet', 'hasVillage', 'hasGeo'));
     }
 
     /**
@@ -88,7 +96,7 @@ class RegionController extends Controller
     public function tree(Request $request): JsonResponse
     {
         $maxLevel = (int) $request->input('max_level', 3);
-        $maxLevel = min(max($maxLevel, 1), 4);
+        $maxLevel = min(max($maxLevel, 1), 5);
 
         $tree = $this->regionService->getCascaderData($maxLevel);
 
@@ -111,6 +119,168 @@ class RegionController extends Controller
             'code' => 0,
             'message' => 'success',
             'data' => $path,
+        ]);
+    }
+
+    /**
+     * 按百度地图解析结果更新单个区划坐标（仅开发模式可用）
+     */
+    public function updateCoordinate(Request $request): JsonResponse
+    {
+        if (! config('app.dev_mode')) {
+            return response()->json([
+                'code' => 1,
+                'message' => '该功能仅限开发模式（APP_DEV_MODE=true）使用',
+                'data' => null,
+            ]);
+        }
+
+        $code = trim((string) $request->input('code', ''));
+        $lng = $request->input('lng');
+        $lat = $request->input('lat');
+
+        if ($code === '' || ! is_numeric($lng) || ! is_numeric($lat)) {
+            return response()->json([
+                'code' => 1,
+                'message' => '参数不完整：code、lng、lat 均为必填项',
+                'data' => null,
+            ]);
+        }
+
+        $result = $this->regionService->updateBaiduCoordinate($code, (float) $lng, (float) $lat);
+
+        return response()->json([
+            'code' => $result['success'] ? 0 : 1,
+            'message' => $result['message'],
+            'data' => $result['data'] ?? null,
+        ]);
+    }
+
+    /**
+     * 获取单个区划当前库中的经纬度（仅开发模式可用）
+     */
+    public function coordinate(Request $request): JsonResponse
+    {
+        if (! config('app.dev_mode')) {
+            return response()->json([
+                'code' => 1,
+                'message' => '该功能仅限开发模式（APP_DEV_MODE=true）使用',
+                'data' => null,
+            ]);
+        }
+
+        $code = trim((string) $request->input('code', ''));
+        if ($code === '') {
+            return response()->json([
+                'code' => 1,
+                'message' => '参数不完整：code 为必填项',
+                'data' => null,
+            ]);
+        }
+
+        $coordinate = $this->regionService->getCoordinate($code);
+        if ($coordinate === null) {
+            return response()->json([
+                'code' => 1,
+                'message' => '区划不存在：' . $code,
+                'data' => null,
+            ]);
+        }
+
+        return response()->json([
+            'code' => 0,
+            'message' => 'success',
+            'data' => $coordinate,
+        ]);
+    }
+
+    /**
+     * 获取批量更新坐标的候选区划（仅开发模式可用）
+     */
+    public function coordinateCandidates(Request $request): JsonResponse
+    {
+        if (! config('app.dev_mode')) {
+            return response()->json([
+                'code' => 1,
+                'message' => '该功能仅限开发模式（APP_DEV_MODE=true）使用',
+                'data' => null,
+            ]);
+        }
+
+        $levels = array_filter(array_map('intval', explode(',', (string) $request->input('levels', '1,2,3,4'))));
+        $onlyMissing = (bool) $request->input('only_missing', 1);
+        $afterCode = trim((string) $request->input('after_code', ''));
+        $limit = (int) $request->input('limit', 100);
+        $limit = min(max($limit, 1), 500);
+
+        $result = $this->regionService->getCoordinateCandidates($levels, $onlyMissing, $afterCode, $limit);
+
+        return response()->json([
+            'code' => 0,
+            'message' => 'success',
+            'data' => $result,
+        ]);
+    }
+
+    /**
+     * 批量写入区划坐标（仅开发模式可用）
+     */
+    public function updateCoordinateBatch(Request $request): JsonResponse
+    {
+        if (! config('app.dev_mode')) {
+            return response()->json([
+                'code' => 1,
+                'message' => '该功能仅限开发模式（APP_DEV_MODE=true）使用',
+                'data' => null,
+            ]);
+        }
+
+        $items = $request->input('items', []);
+        if (! is_array($items) || empty($items)) {
+            return response()->json([
+                'code' => 1,
+                'message' => '参数不完整：items 不能为空',
+                'data' => null,
+            ]);
+        }
+
+        if (count($items) > 50) {
+            return response()->json([
+                'code' => 1,
+                'message' => '单次最多提交 50 条坐标',
+                'data' => null,
+            ]);
+        }
+
+        $successCount = 0;
+        $failures = [];
+
+        foreach ($items as $item) {
+            $code = trim((string) ($item['code'] ?? ''));
+            $lng = $item['lng'] ?? null;
+            $lat = $item['lat'] ?? null;
+
+            if ($code === '' || ! is_numeric($lng) || ! is_numeric($lat)) {
+                $failures[] = ['code' => $code, 'message' => '参数不完整'];
+                continue;
+            }
+
+            $result = $this->regionService->updateBaiduCoordinate($code, (float) $lng, (float) $lat);
+            if ($result['success']) {
+                $successCount++;
+            } else {
+                $failures[] = ['code' => $code, 'message' => $result['message']];
+            }
+        }
+
+        return response()->json([
+            'code' => 0,
+            'message' => 'success',
+            'data' => [
+                'success_count' => $successCount,
+                'fail_count' => count($failures),
+                'failures' => $failures,
+            ],
         ]);
     }
 
