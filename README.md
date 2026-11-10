@@ -1,6 +1,6 @@
 # 中国行政区划 应用文档
 
-> 应用ID：`cmspro.region` | 文档版本：1.3.3 | 应用版本：1.7.2 | 依赖：PHP ≥ 8.3, CmsPro ≥ 5.0.0
+> 应用ID：`cmspro.region` | 文档版本：1.3.4 | 应用版本：1.7.3 | 依赖：PHP ≥ 8.3, CmsPro ≥ 5.0.0
 
 - 官方地址：https://www.cmspro.cn/apps/cmspro.region
 - 本应用提供中国五级行政区划数据的管理、同步、查询与可视化演示能力，基于 CMSPRO 运行，请先安装 [CMSPRO](https://www.cmspro.cn/help/2)
@@ -38,8 +38,8 @@
 CmsproRegion/
 ├── Config/region.php                 # 应用默认配置（同步级别、缓存策略等）
 ├── Controllers/Admin/                # 后台控制器（RegionController 数据管理/演示、SettingController 应用设置）
-├── Data/                             # 本地数据源（list.json、code/*.json 街道包、地理位置编码.xlsx）
-├── Migrations/                       # 应用表迁移（区划表、闭包表、geo 列、code 长度、level+code 索引、村社区回填）
+├── Data/                             # 本地数据源（list.json、code/*.json 街道包、地理位置编码.xlsx、坐标订正 CSV 兼回滚依据）
+├── Migrations/                       # 应用表迁移（区划表、闭包表、geo 列、code 长度、level+code 索引、村社区回填、坐标对齐 DataV）
 ├── Models/                           # Region 区划模型、RegionClosure 闭包表模型
 ├── Routes/                           # admin.php 后台页面、admin_api.php 后台接口、demo.php 前台演示页、demo_api.php 前台公开只读接口
 ├── Services/                         # RegionService 区划业务、RegionDataSyncService 在线同步与快照导入、RegionSnapshotService 快照导出、RegionLevelService 区划级别、MapSettingService 地图配置

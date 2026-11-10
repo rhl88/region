@@ -2,7 +2,7 @@
     "id": "cmspro.region",
     "name": "中国行政区划",
     "description": "中国行政区划数据服务，支持省、市、区县三级联动及街道四级、村/社区五级可选，支持“行政区边界”查询，提供API供其他应用调用",
-    "version": "1.7.2",
+    "version": "1.7.3",
     "author": "CmsPro",
     "icon": "fa fa-map-marker",
     "require": {
