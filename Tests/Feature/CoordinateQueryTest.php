@@ -8,7 +8,7 @@ use App\Apps\CmsproRegion\Models\Region;
  * 「更新坐标 → 单个更新」库中经纬度查询接口测试
  *
  * 覆盖：有坐标回显、无坐标返回 null、区划不存在、非开发模式也可查询，
- *       以及五级级联下拉（含村/社区）的视图渲染与村级子项数据源。
+ *       以及五级级联下拉（含村/社区）、手动选择坐标入口的视图渲染与村级子项数据源。
  */
 class CoordinateQueryTest extends RegionTestCase
 {
@@ -39,6 +39,19 @@ class CoordinateQueryTest extends RegionTestCase
             ->assertOk()
             ->assertSee('var coordMaxDepth = 5;', false)
             ->assertSee('id="coordSel5"', false);
+    }
+
+    public function test_单个更新弹窗渲染手动选择坐标入口(): void
+    {
+        config(['app.dev_mode' => true]);
+
+        $this->asAdmin()
+            ->get('/admin/cmspro/region')
+            ->assertOk()
+            ->assertSee('id="coordPickBtn"', false)
+            ->assertSee("$('#coordPickBtn').on('click', openCoordPicker);", false)
+            ->assertSee('id="coordPickMap"', false)
+            ->assertSee('function saveCoordPick(target, pickIndex)', false);
     }
 
     public function test_街道子级接口返回村级区划(): void
