@@ -129,6 +129,12 @@ return new class extends Migration
     protected function planRows(): array
     {
         $path = __DIR__ . '/../Data/backfill_unmatched_villages_20261109.csv';
+        // 必须先判存在再 fopen：文件缺失时 fopen 触发的 E_WARNING 会被框架错误处理器
+        // 转成 ErrorException 抛出，使「静默跳过」失效并导致站点升级中断
+        if (! is_file($path) || ! is_readable($path)) {
+            return [];
+        }
+
         $handle = fopen($path, 'rb');
         if ($handle === false) {
             return [];
