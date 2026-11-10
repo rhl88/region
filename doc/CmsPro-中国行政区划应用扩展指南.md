@@ -1,6 +1,6 @@
 # CmsPro 中国行政区划应用扩展指南
 
-> 版本：1.10.0 | 更新日期：2026-11-07
+> 版本：1.11.0 | 更新日期：2026-11-08
 > 适用系统：CmsPro v5.0.0+
 > 应用ID：`cmspro.region`
 
@@ -709,7 +709,7 @@ $snapshot = $snapshotService->export('20261106001');
 
 独立于 `RegionService` 的在线同步服务（`Services/RegionDataSyncService.php`，消费端），从版本服务器（Versionsvr「区划数据」服务）在线同步官方区划数据，**全量替换**本地库——站点数据初始化/更新从「一键导入」（约 1 小时）降至 **1 分钟内**。
 
-**后台入口**：数据管理页「在线同步官方数据」按钮，交互为「检查更新 → 弹窗确认 → 同步（实时进度条）」，涉及三个接口：`GET /api/admin/cmspro/region/sync-check-update`（检查更新）+ `POST /api/admin/cmspro/region/sync-region-data`（执行同步，`version` 参数可指定历史版本回退、`progress_token` 参数启用进度上报）+ `GET /api/admin/cmspro/region/sync-progress`（轮询进度，前端 800ms/次）。
+**后台入口**：数据管理页「在线同步官方数据」按钮，交互为「检查更新 → 弹窗选择同步级别并确认 → 同步（实时进度条）」，涉及三个接口：`GET /api/admin/cmspro/region/sync-check-update`（检查更新）+ `POST /api/admin/cmspro/region/sync-region-data`（执行同步，`version` 参数可指定历史版本回退、`max_level` 参数指定落库最大级别（仅 3/4/5，缺省按 5）、`progress_token` 参数启用进度上报）+ `GET /api/admin/cmspro/region/sync-progress`（轮询进度，前端 800ms/次）。弹窗以单选形式提供「同步至区县 / 街道 / 村社区」三档并标注各档累计条数，级别越浅落库量与耗时越少（详见 4.20 `RegionLevelService`）。
 
 另有「**导入快照包**」按钮（站点间分享）：`POST /api/admin/cmspro/region/import-snapshot`（`file` 必填 zip ≤50MB、`progress_token` 可选），上传其他站点「导出快照包」生成的 ZIP，复用同一套契约校验与单事务全量替换落库链路，版本号取包内 `meta.json` 的 `version`（缺失回退 `snapshot-{YmdHis}`）；因上传包无可信校验和来源，不做 SHA-256 校验，须仅导入可信站点分享的包。
 
@@ -726,12 +726,15 @@ $info = $syncService->checkUpdate();
 //     'region_count' => 47362,        // 远端记录总数
 //     'stats' => [...],               // 五级统计
 //     'local_version' => '',          // 本地已同步版本（空=从未同步）
+//     'local_level' => 0,             // 本地已同步级别（0=未知，见 4.20）
 //     'need_update' => true,          // 是否需要更新
 //     ...
 // ]
 
 // 2. 在线同步（全量替换落库），null 同步最新版本，传版本号回退历史版本
+//    第二参数为落库最大级别（1-5，缺省 5 五级全量）：仅同步省市区县传 3，含街道传 4
 $result = $syncService->sync(null);
+$result = $syncService->sync(null, 3);   // 只落库到区县级（约 3,239 条）
 // [
 //     'synced' => true,
 //     'version' => '20261106001',
@@ -755,17 +758,18 @@ $progress = $syncService->getProgress('sync_xxx');
 
 | 步骤 | 说明 |
 |------|------|
-| ① 检查更新 | `GET {apps.market.api_url}/api/versionsvr/region-data/latest`；本地已是最新且未指定版本时跳过下载 |
+| ① 检查更新 | `GET {apps.market.api_url}/api/versionsvr/region-data/latest`；未指定版本、本地版本与官方一致**且已同步级别不浅于本次请求级别**时跳过下载（级别更浅时不跳过，允许同版本补齐更深层级） |
 | ② 下载校验 | 下载 `region-data/download/{version}`，SHA-256 与版本服务器声明值比对，不符拒绝 |
 | ③ 解包 | 防 Zip Slip，兼容包内多一层包裹目录，读 regions.json |
-| ④ 契约校验 | 与导出端/版本服务器同一套规则（必填/code 唯一≤12 位/level 1-5/parent 引用闭环/省级必含/上限 70 万），**流式执行**：校验结果写 JSONL 中间产物，**进事务前执行**，非法数据直接拒绝 |
-| ⑤ 单事务落库 | 全删（DELETE，MySQL 下 TRUNCATE 会隐式提交）→ 按 level 分层多遍扫描 JSONL 批量插入（2000 条/批，parent_code → parent_id，父级先于子级，层间 code 映射 `chunkById` 流式收集）→ 闭包表 SQL 化重建（`INSERT...SELECT` 逐层展开祖先链）→ 事务提交 |
-| ⑥ 后处理 | 清缓存（`RegionService::clearCache()`）→ 记版本（配置项 `app_cmspro_region_data_sync_version`；配置组「数据同步设置」由框架在应用安装/升级时落库，**组缺失时 `firstOrCreate` 自愈创建**，确保版本号一定写入）→ 清理旧包（保留最近 3 个） |
+| ④ 契约校验 | 与导出端/版本服务器同一套规则（必填/code 唯一≤12 位/level 1-5/parent 引用闭环/省级必含/上限 70 万），**流式执行**：校验结果写 JSONL 中间产物，**进事务前执行**，非法数据直接拒绝；**级别裁剪前置于规范化**——深于 `$maxLevel` 的记录直接跳过，既不进 code 校验集合（省内存）也不写 JSONL（省磁盘 IO） |
+| ⑤ 单事务落库 | 全删（DELETE，MySQL 下 TRUNCATE 会隐式提交）→ 按 level 分层多遍扫描 JSONL 批量插入（`range(1, $maxLevel)` 逐层，2000 条/批，parent_code → parent_id，父级先于子级，层间 code 映射 `chunkById` 流式收集；仅末级以下无下级引用，故收集止于 `$maxLevel - 1`）→ 闭包表 SQL 化重建（`INSERT...SELECT` 逐层展开祖先链，深度由库中 `max(level)` 推导，级别裁剪后无需传参）→ 事务提交 |
+| ⑥ 后处理 | 清缓存（`RegionService::clearCache()`）→ 记版本与级别（配置项 `app_cmspro_region_data_sync_version` / `app_cmspro_region_data_sync_level`，并联动写入 `app_cmspro_region_region_max_level` 使演示页选择器与数据深度一致；配置组由框架在应用安装/升级时落库，**组缺失时 `firstOrCreate` 自愈创建**，确保版本号一定写入）→ 清理旧包（保留最近 3 个） |
 
 **性能基准**：
 
 - 四级数据包（sqlite 内存库实测，49334 条四级区划 + 19.3 万条闭包记录）：契约校验 0.73s + 全量替换落库 5.11s ≈ **5.84s**。
 - 五级村级数据包（MySQL 8 实测，584,265 条 + 284 万条闭包记录）：全链路流式化，512M 内存限制下**内存峰值仅 86MB**；流式校验约 3 分钟 + 插入 58 万条约 4 分钟 + 闭包重建约 1 分钟（SQL 化后 58 万节点），五级全量同步耗时约 10 分钟量级，建议低峰期执行。
+- **按级别裁剪的落库量**（官方版本 `20261107002`，总数 638,772 条）：三级约 3,239 条、四级约 41,956 条、五级全量 638,772 条。只需省市区县或到街道的站点选择浅级别同步，落库量降低 2~3 个数量级，耗时与数据库写入压力（表体积、索引维护、闭包表行数）同步下降。
 
 ### 4.19 MapSettingService（地图配置解析）
 
@@ -793,6 +797,38 @@ $progress = $syncService->getProgress('sync_xxx');
 **其他应用如需读取本应用地图配置**：`app(MapSettingService::class)->resolveEffective()`；仅当 `configured === true` 时 `sdk_url`、`key` 才有值。
 
 > 配置组 `app_cmspro_region_map_settings` 由框架在安装/升级应用时按 `manifest.json` 写入。**从 v1.5.0 及更早版本升级的站点，须先在「应用管理」升级到应用 v1.6.0**，否则设置页提示升级，点击「保存设置」时由保存接口返回同一原因。
+
+### 4.20 RegionLevelService（区划级别读写）
+
+区划级别服务（`Services/RegionLevelService.php`，单例，`ServiceProvider` 注册），统一维护两组级别语义——「**区划显示级别**」（演示页选择器渲染深度，由「应用设置 → 区划级别设置」读写）与「**已同步数据级别**」（在线同步 / 导入快照包落库的最大级别，由同步链路自动写入）。
+
+```php
+use App\Apps\CmsproRegion\Services\RegionLevelService;
+
+/** @var RegionLevelService $levels */
+$levels = app(RegionLevelService::class);
+
+$levels->maxLevel();          // 当前显示级别（int，1-5，默认 5）
+$levels->setMaxLevel(3);      // 写入显示级别；非法值抛 RuntimeException（中文消息）
+$levels->syncedLevel();       // 已同步级别（0 = 未知）
+$levels->isValidLevel(3);     // bool：是否为 1-5 之间
+$levels->levelName(3);        // '区县'
+$levels->levelLabel(3);       // '3 级（至区县）'
+$levels->saveSyncedLevel(3);  // 同步成功后调用：写 data_sync_level 并联动写 region_max_level
+```
+
+| 配置项（`app_cmspro_region_` 前缀） | 所属配置组 | 说明 |
+|-----------------------------------|-----------|------|
+| `region_max_level` | `region_settings` | 区划显示级别，1（省）~5（村/社区），默认 5 |
+| `data_sync_level` | `sync_settings` | 已同步落库的最大级别，由 `saveSyncedLevel()` 写入 |
+
+**关键行为**：
+
+- **作用范围仅演示页选择器**：`RegionController::demo()` 用 `maxLevel()` 计算 `$canSelect` / `$showDistrict` / `$showStreet` / `$showVillage` / `$levelLabel`，各级下拉需同时满足「库中有该级数据」与「设置级别 ≥ 该级」才渲染；设置级别低于 3 时降级为省 / 市两级，并在状态卡片下方注明当前级别。**对外 API（`children` / `tree` / `list` / `path`）与 `RegionService` 契约零改动**，其他应用读取区划数据不受影响。
+- **已同步级别缺失时回退库中真实层级**：`syncedLevel()` 在配置项不存在时取 `Region::max('level')`（查询异常按 0 处理），使本功能上线前已同步的老站点点击「在线同步」时能正确判定「已是最新」，不会重复全量导入 64 万条。
+- **同步联动**：`saveSyncedLevel($level)` 同时把显示级别改写为 `$level`（快照包为五级全量导出，固定传 `RegionLevelService::MAX_LEVEL`），使选择器深度与实际数据一致；写入失败仅 `Log::warning`，不中断同步主流程。
+- **配置组自愈**：写入时若 `region_settings` 组不存在，按 `manifest.json` 的 `config_groups` 声明 `firstOrCreate` 创建（标题「区划设置」），站点未升级也能保存；读取时组 / 配置项缺失一律回退默认值（显示级别 5、已同步级别 0）。
+- **缓存**：读取走 `Cache::remember`（TTL 3600 秒，key `cmspro_region:level:{key}`），写入后立即 `Cache::forget`，保证设置页保存后演示页即时生效。
 
 ***
 
@@ -992,9 +1028,10 @@ ORDER BY c.depth DESC;
 11. **API调用频率**：街道数据导入时每处理一个区县暂停100ms，避免请求过快导致API限流
 12. **地理位置数据**：经纬度信息仅在城市和区县级别可用，街道级别暂不支持；数据源为本地Excel文件 `Data/地理位置编码.xlsx`，需手动点击「导入地理位置」按钮导入
 13. **快照导出契约稳定性**：导出包内 `regions.json` / `meta.json` 的文件名、字段集与排序规则为版本服务器（Versionsvr「区划数据」服务）与消费端（各站点区划应用在线同步）共同依赖的分发契约，调整任何一项前须同步评估版本服务器校验规则与各站点消费端兼容性，禁止单方面变更
-14. **在线同步为全量替换**：`RegionDataSyncService::sync()` 会全量替换本地区划数据（本地手工修改会被覆盖），仅适用于「以官方数据为准」的场景；需保留本地定制的站点请使用导入链路并自行维护差异
+14. **在线同步为全量替换**：`RegionDataSyncService::sync()` 会全量替换本地区划数据（本地手工修改会被覆盖），仅适用于「以官方数据为准」的场景；需保留本地定制的站点请使用导入链路并自行维护差异；指定 `max_level` 按级别同步时，**深于该级别的既有数据（如已同步的村/社区）也会一并清除**
 15. **导入快照包为不可信上传**：`importFromSnapshot()` 接受任意来源的 ZIP 上传，虽经防 Zip Slip 与契约校验（非法数据进事务前拒绝、落库单事务回滚），但**不做 SHA-256 校验**（无可信校验和来源），仅限后台管理员使用且应只导入可信站点分享的包
-15. **同步版本配置组依赖**：已同步版本号记录依赖配置组「数据同步设置」（`app_cmspro_region_sync_settings`）落库，该组由框架在应用**安装/升级**时按 manifest `config_groups` 声明创建——旧站点首次使用在线同步前需在后台「应用管理」对本应用执行一次升级，否则版本号记录不生效（同步本身不受影响）
+15. **同步版本配置组依赖**：已同步版本号记录依赖配置组「数据同步设置」（`app_cmspro_region_sync_settings`）落库，该组由框架在应用**安装/升级**时按 manifest `config_groups` 声明创建——旧站点首次使用在线同步前需在后台「应用管理」对本应用执行一次升级，否则版本号记录不生效（同步本身不受影响）。**v1.7.0 起已改为写入时 `firstOrCreate` 自愈建组**，未升级站点同样能记录版本；同版本新增的「区划设置」组（`app_cmspro_region_region_settings`，承载区划显示级别）也采用同样的自愈策略
+16. **本地回填的村/社区会被全量替换抹掉**：迁移 `2026_11_09_000001_backfill_unmatched_villages` 写入的 14,291 个村/社区（数据源 `Data/backfill_unmatched_villages_20261109.csv`，兼作本批独立备份）属于**本地补齐数据**，官方数据包与快照包内均无这些记录——执行「在线同步官方数据」或「导入快照包」后本批数据会随全量替换一并消失。恢复方式：后台「应用管理」对本应用执行一次升级（触发 `runMigrations()`），或删除 `migrations` 表中该条记录后升级；迁移按 `code` 幂等（`uk_code` 已存在的行自动跳过），可安全重跑。回滚执行迁移 `down()`（按 CSV 内 code 集合删主表 level=5 行与闭包表对应 descendant 行，删叶子节点后闭包天然一致，无需全量重建）
 
 ***
 
@@ -1014,3 +1051,8 @@ ORDER BY c.depth DESC;
 | 1.8.0 | 2026-11-06 | 开发团队 | 新增 `importFromSnapshot()` 快照包导入（4.18 节，站点间分享）：接收上传 ZIP（`POST import-snapshot`，zip ≤50MB），复用在线同步的解包（防 Zip Slip）/契约校验/单事务全量替换落库/进度上报链路；版本号取包内 meta.json（缺失回退 `snapshot-{YmdHis}`）；不做 SHA-256 校验（上传包无可信校验和来源），注意事项新增第 15 条「导入快照包为不可信上传」 |
 | 1.9.0 | 2026-11-07 | 开发团队 | 新增**行政村/社区五级数据**（应用 v1.5.0）：① code 字段扩容迁移 varchar(9)→varchar(12)；② 导出/导入/在线同步契约支持五级（level 1-5、code ≤12 位、上限放宽至 60 万条、stats 增 village，与版本服务器同步）；③ 同步链路流式化——数据包解包转存 regions.json、契约校验流式写 JSONL 中间产物、按层级分遍扫描批量插入（2000 条/批）、层间 code 映射 `chunkById` 流式收集，58.4 万条五级全量同步内存峰值 86MB（512M 限制，MySQL 实测）；④ 闭包表重建 SQL 化（`INSERT...SELECT` 逐层展开，58 万节点约 31 分钟 → 约 1 分钟）；⑤ `clearCache()` 版本号命名空间失效（七、缓存说明），children/path 动态缓存键带版本号、旧键由 TTL 自然过期 |
 | 1.10.0 | 2026-11-07 | 开发团队 | 新增 `MapSettingService` 地图配置服务（4.19 节）与后台「应用设置」页（`/admin/cmspro/region/setting`，权限 `cmspro.region.setting.manage`）：三种配置来源 `none`/`own`/`maps`（可关联 CmsproMaps 复用其 `provider` 与前端密钥），四项前端密钥 `Crypt` 加密落库，manifest 新增配置组 `map_settings`；数据演示页地图层重构为厂商适配器（百度 BMapGL / 高德 AMap 2.0 / 腾讯 TMap GL），坐标系按厂商转换、SDK 加载失败自动回退 Leaflet + 高德瓦片（对应应用 v1.6.0） |
+| 1.11.0 | 2026-11-08 | 开发团队 | 新增 `RegionLevelService` 区划级别服务（4.20 节，对应应用 v1.7.0）：① 在线同步支持**按级别裁剪落库**——`sync($version, $maxLevel)` 第二参数指定最大级别，级别裁剪前置到契约校验阶段（深于所选级别的记录不进 code 校验集合、不写 JSONL、不落库），`importRegionRows` 按 `range(1, $maxLevel)` 分遍插入，闭包重建深度仍由库中 `max(level)` 推导；后台弹窗改为「版本信息 + 同步级别单选（3 区县 / 4 街道 / 5 村社区，标注累计条数，默认选中已同步级别）」，接口 `max_level` 仅接受 3/4/5，浅级别把落库量从 63.8 万条降到 3 千 / 4.2 万条量级；② 重复保护改为「版本相同**且已同步级别不浅于请求级别**才跳过」，`checkUpdate()` 增返 `local_level`，支持同版本补齐更深层级；③ 新增配置项 `data_sync_level`（已同步级别，缺失时回退 `Region::max('level')`，避免老站点重复全量导入）与 `region_max_level`（区划显示级别 1~5 默认 5），新建配置组 `region_settings`（写入时 `firstOrCreate` 自愈），同步 / 导入快照包成功后自动联动写入显示级别；④ 「应用设置」页新增「区划级别设置」卡片，与地图配置共用同一表单与保存接口；⑤ 数据演示页各级下拉改为「库中有该级数据 && 设置级别 ≥ 该级」才渲染，级别低于 3 时降级为省 / 市两级并提示当前设置——**对外 API 与 `RegionService` 契约零改动** |
+| 1.12.0 | 2026-11-09 | 开发团队 | **数据回填**（应用版本不变，纯 DML 无代码逻辑改动）：新增迁移 `V2026110901`（`Migrations/2026_11_09_000001_backfill_unmatched_villages.php`）+ 数据源 `Data/backfill_unmatched_villages_20261109.csv`，回填 14,291 个「统计区划代码存在、本地库找不到上级乡镇」的村/社区——按 2,939 个街道节点逐项人工查证真实归属后写入 `parent_id`，村 code 保留原 12 位统计代码不重编码；对账闭合 14,425 = 14,291 写入 + 9 同名跳过 + 125 真实缺口（缺口村另立清单待人工处置，本批不写）。落位分布：街道下 13,672 / 兵团师市 L3 662 / 兵团师市 L4 45 / 代码前缀回退 27 / 兵团无师市按地理区县 10 / 挂靠回退 9；L3 落点村直接挂区县跳过 L4，兵团团场按行政隶属挂师市。写入后计数：level=5 由 606,144 增至 **620,435**，总记录 648,102 → **662,393**，闭包表 3,154,717 → **3,215,228**（+60,511，平均每村 4.23 行），L3/L4 零变化；只读验证 14 项全 PASS（行数与层级、code 全落库且 level/name/parent_id 逐字段匹配、`uk_code` 无重复、孤儿节点 0、闭包 self 行与 depth=1 父链各 14,291/14,291、父链均可达 L1、闭包增量合理）。注意事项新增第 16 条「本地回填的村/社区会被全量替换抹掉」 |
+| 1.12.1 | 2026-11-10 | 开发团队 | **村/社区坐标手工补全 + 同名重复记录合并**（应用版本不变，纯 DML 无代码逻辑改动，未新增迁移）：为 65 个村/社区补写 GCJ-02 坐标——湖北仙桃市 7 条、天门市 3 条，新疆石河子市 8 条、五家渠市 8 条、铁门关市 36 条、图木舒克市 2 条、阿拉尔市 1 条。这批村在后台「在线更新坐标(GeoJSON)」下取不到值：阿里 DataV 仅收录到区县级，村级 12 位编码请求无数据（与数据演示页「行政区划边界」无村级边界同源），故按人工整理结果直接落库。写库均带 `whereNull('lon')` 护栏，只补空值、不覆盖既有坐标，实测覆盖 0 条。同时按人工裁决合并石河子市 3 条同名重复记录：「十九连生活区」保留 `652324521517`、删除 `652324522518` / `652324524521`，「砖厂生活区」保留 `650203530514`、删除 `652324522523`——删除同步清理闭包表关系行 9 条（每条 3 行：self depth=0、师市 depth=1、省 depth=2），删除前 6 项预检（存在 / code+name 相符 / level=5 / 无坐标 / 无子级 / 保留记录 lon 为空），删后全库孤儿节点 0。变更后计数：level=5 由 620,435 降至 **620,432**、总记录 662,393 → **662,390**、闭包表 3,215,228 → **3,215,219**，L1~L4 零变化。遗留：铁门关市仍有 2 条村无坐标（`652829501504` 六连队、`652829501506` 二连队），人工清单未提供。**风险同 1.12.0**：执行 4.18「在线同步官方数据」或「导入快照包」为全量替换，这批坐标会被抹掉、被删的 3 条同名记录会随官方包重新出现（见注意事项第 16 条） |
+| 1.12.2 | 2026-11-10 | 开发团队 | **同父级同名重复记录合并**（应用版本不变，纯 DML 无代码逻辑改动，未新增迁移）：排查口径 `GROUP BY (parent_id, name) HAVING COUNT(*) > 1`，按 level 分别执行——level=3（同一市下同名区/县）0 组、level=4（同一区县下同名街道/乡镇）0 组、level=5（同一街道/乡镇或直挂区县下同名村/社区）**322 组 / 1,098 条**。用户裁决全量合并，保留策略沿用 `code` 升序第 1 条，删除 776 条主表记录 + 2,709 行闭包关系。**分类判据**：以「code 前 9 位乡镇段是否一致」+「组内坐标两两最大 Haversine 距离（阈值 2km）」分为 A 同段坐标重合 47 组（待删 47）/ B 跨段坐标重合 273 组（待删 727）/ C 坐标相距远 **0 组** / D 组内坐标缺失 2 组（待删 2）；实测组内最大距离 <0.2km 者 320 组、其余坐标完全一致，C 类为 0 故不存在「异地同名村被误删」风险。B 类中 270 组父级为 level=3（兵团师市 `6590xx`、省直辖县级市 `4290xx` 等「村直接挂区县、跳过 L4」形态，闭包仅 3 行）。**执行链路**：实时重新分组并与预期（322 组 / 776 条）对账，不符即中止 → 六项安全预检（待删条无子级、status=1、无「保留条缺坐标而待删条有坐标」、祖先链完整等）→ 落盘备份 JSON + 可执行回滚 SQL → 单事务内「坐标回填（带 `whereNull` 护栏，实回填 0 条）→ 按祖先链收窄 `ancestor` 删闭包行（实删行数与链长不符即抛异常回滚）→ 分批 500 删主表」→ `clearCache()` → 六项回读验证。**闭包删除写法（索引陷阱）**：`uk_ancestor_descendant` 最左前缀是 `ancestor`，直接按 `descendant` 过滤会全表扫 321 万行，故先沿主表 `parent_id` 收集祖先链（**必须在删主表前收集**）再 `whereIn('ancestor', $chain)->where('descendant', $id)`；本次祖先链长分布 `3:445 / 4:281 / 5:50`（对应兵团直挂 / 直辖市 / 普通省份）。**验证结果**：L5 同父级同名剩余 0 组、主表孤儿 0 条、闭包 descendant 侧与 ancestor 侧残留均 0 行、322 条保留记录全在库且其中无坐标者 0 条；计数 level=5 620,432 → **619,656**、总记录 662,390 → **661,614**、闭包表 3,215,219 → **3,212,510**，L1~L4 零变化（34 / 333 / 2,874 / 38,717）。顺带清零 1.12.1 遗留：铁门关市 `652829501504` / `652829501506` 作为 D 类重复被删，保留条已有坐标。备份产物 `backup_dup_merge_20261110_095109.json` 与 `rollback_dup_merge_20261110_095109.sql` 存于临时工作目录，未纳入应用目录。**风险同 1.12.0**：执行 4.18「在线同步官方数据」或「导入快照包」为全量替换，这 776 条同名记录会随官方包重新出现，需重跑合并（见注意事项第 16 条） |
+| 1.12.3 | 2026-11-10 | 开发团队 | **数据管理页双击行查看区划完整详情**（应用版本不变，仅 `Views/Admin/index.blade.php` 单文件改动，Controller / Service / 路由 / 迁移 / 数据库零改动）：双击列表行弹出 `layer.open` 详情层，展示层级路径 + `region` 表全部字段（id / code / name / level / parent_id / status / lon / lat / create_time / update_time）+ 直接子级数量。**接口复用而非新增**——`list` 接口 `paginate()->toArray()['data']` 已返回模型全字段（`$casts` 使 `lon`/`lat` 为 float、时间为 `Y-m-d H:i:s`），故详情只需并发调用既有 `GET /api/admin/cmspro/region/path`（闭包表祖先链，`depth>0` 按 level 升序 + 末位追加自身）与 `GET /api/admin/cmspro/region/children`（`parent_id` 直接子级，取数组长度即数量）；`level>=5` 为最末级不发 `children` 请求，直接按空集处理。**layui 契约**：`table` 模块未提供行双击事件，在 `table.render` 的 `done` 回调内自行绑定——`$('#regionTable').next('.layui-table-view').find('.layui-table-body tbody tr')` 上按 `$(this).data('index')` 从 `table.cache['regionTable'][index]` 取行数据（已核实 `layui.js` 中 `tr` 由 `data-index="'+e+'"` 拼接、`k.cache[e]` 即行数据源，`.next('.layui-table-view')` 定位方式与框架 `resources/views/admin/menu/index.blade.php` 一致）；事件带 `dblclick.regionDetail` 命名空间并先 `off` 再 `on`，避免重载重复绑定；无数据时占位 `tr` 无 `data-index`，取值为 `undefined` 故不会误弹。**容错**：两个请求用 `pending` 计数 + `.always()` 收敛，任一失败仍弹层，路径显示「未获取到层级路径」、子级显示「获取失败」，最末级子级显示「无（最末级或暂无下级数据）」；所有取自数据库的名称/编码经 `escapeDetailHtml` 转义后再拼接，日期直接展示不做二次 `format()`。**验证**：Blade 编译产物 `php -l` 通过、内联脚本 `node --check` 通过；把详情渲染函数从编译产物中抽出、注入真实库数据在 node 中执行，村级样本（多福巷社区居委会，路径 5 级、子级 0）与直辖市顶级样本（北京市，路径仅 4 级因无 level=2、子级 16）输出的字段值、上级区划、占位符均逐项核对正确 |
