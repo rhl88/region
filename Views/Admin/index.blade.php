@@ -73,6 +73,15 @@
         .batch-stats{margin-top:8px;font-size:12px;color:#666;line-height:1.8;}
         .batch-log{max-height:150px;overflow-y:auto;margin-top:8px;padding:8px;background:#fafafa;border-radius:4px;font-size:12px;line-height:1.8;color:#666;}
         .coord-footer{margin-top:16px;text-align:right;}
+        /* 区划详情弹层（双击列表行触发） */
+        .region-detail{padding:16px 20px;font-size:13px;color:#333;max-height:66vh;overflow-y:auto;}
+        .region-detail .detail-path{margin-bottom:14px;padding:8px 10px;background:#f6faff;border:1px solid #d9ecff;border-radius:4px;line-height:1.8;color:#5c7ca8;word-break:break-all;}
+        .region-detail .detail-path-cur{color:#1e9fff;font-weight:bold;}
+        .region-detail .detail-table{width:100%;border-collapse:collapse;}
+        .region-detail .detail-table th,.region-detail .detail-table td{border:1px solid #eee;padding:7px 10px;text-align:left;word-break:break-all;}
+        .region-detail .detail-table th{width:120px;background:#fafafa;color:#666;font-weight:normal;white-space:nowrap;}
+        .region-detail .detail-empty{color:#999;}
+        .region-table-tip{margin:0 0 8px;font-size:12px;color:#999;}
     </style>
 </head>
 <body>
@@ -273,6 +282,7 @@
                 <div class="import-log" id="updateLog"></div>
             </div>
 
+            <div class="region-table-tip">提示：双击列表行可查看该区划的完整详细信息</div>
             <table id="regionTable" lay-filter="regionTable"></table>
         </div>
     </div>
@@ -325,7 +335,19 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                 return d.status === 1 ? '<span class="layui-badge layui-bg-green">启用</span>' : '<span class="layui-badge">禁用</span>';
             }},
             {field: 'create_time', title: '创建时间'}
-        ]]
+        ]],
+        done: function(){
+            // layui 未提供行双击事件，渲染完成后自行绑定；命名空间便于重载时覆盖旧绑定
+            $('#regionTable').next('.layui-table-view')
+                .find('.layui-table-body tbody tr')
+                .off('dblclick.regionDetail')
+                .on('dblclick.regionDetail', function(){
+                    var row = (table.cache['regionTable'] || [])[$(this).data('index')];
+                    if(row && row.code){
+                        openRegionDetail(row);
+                    }
+                });
+        }
     });
 
     // 搜索
@@ -338,6 +360,137 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
             page: {curr: 1}
         });
     });
+
+    // ==================== 区划详情（双击列表行） ====================
+
+    // 详情字段 HTML 转义：区划名称取自数据库，拼接前必须转义，避免破坏弹层结构
+    function escapeDetailHtml(value){
+        if(value === null || typeof value === 'undefined'){
+            return '';
+        }
+        var map = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'};
+        return String(value).replace(/[&<>"']/g, function(char){ return map[char]; });
+    }
+
+    // 详情单元格：空值统一显示占位符（0 属有效值，需正常展示）
+    function detailText(value){
+        if(value === null || typeof value === 'undefined' || value === ''){
+            return '<span class="detail-empty">-</span>';
+        }
+        return escapeDetailHtml(value);
+    }
+
+    // 详情表格行
+    function detailRow(label, value){
+        return '<tr><th>' + label + '</th><td>' + value + '</td></tr>';
+    }
+
+    // 经纬度：库中为 decimal，转 float 后按 6 位小数展示；无坐标时明确提示
+    function detailCoordinate(value){
+        if(value === null || typeof value === 'undefined' || value === ''){
+            return '<span class="detail-empty">暂无坐标</span>';
+        }
+        return escapeDetailHtml(Number(value).toFixed(6));
+    }
+
+    // 层级路径：祖先链按 level 升序返回，末项为自身
+    function detailPath(path, row){
+        if(!path || !path.length){
+            return '<span class="detail-empty">未获取到层级路径</span>';
+        }
+        var html = '';
+        $.each(path, function(index, item){
+            var isCurrent = String(item.code) === String(row.code);
+            html += (index > 0 ? ' &gt; ' : '')
+                + '<span class="' + (isCurrent ? 'detail-path-cur' : '') + '">'
+                + escapeDetailHtml(item.name) + '</span>';
+        });
+        return html;
+    }
+
+    // 直接上级：祖先链中最后一个非自身节点
+    function detailParent(path, row){
+        var parent = null;
+        $.each(path || [], function(index, item){
+            if(String(item.code) !== String(row.code)){
+                parent = item;
+            }
+        });
+        if(!parent){
+            return '<span class="detail-empty">无（顶级区划）</span>';
+        }
+        return escapeDetailHtml(parent.name) + ' <span class="detail-empty">'
+            + escapeDetailHtml(parent.code) + '</span>';
+    }
+
+    // 组装并弹出详情层：children 为 null 表示子级数量未取到
+    function showRegionDetail(row, path, children){
+        var html = '<div class="region-detail">'
+            + '<div class="detail-path">' + detailPath(path, row) + '</div>'
+            + '<table class="detail-table">'
+            + detailRow('ID', detailText(row.id))
+            + detailRow('区划代码', detailText(row.code))
+            + detailRow('区划名称', detailText(row.name))
+            + detailRow('层级', escapeDetailHtml((levelNames[row.level] || '未知') + '（level=' + row.level + '）'))
+            + detailRow('上级区划', detailParent(path, row))
+            + detailRow('上级 ID', detailText(row.parent_id))
+            + detailRow('直接子级', children === null
+                ? '<span class="detail-empty">获取失败</span>'
+                : (children.length > 0
+                    ? escapeDetailHtml(children.length + ' 个')
+                    : '<span class="detail-empty">无（最末级或暂无下级数据）</span>'))
+            + detailRow('状态', row.status === 1
+                ? '<span class="layui-badge layui-bg-green">启用</span>'
+                : '<span class="layui-badge">禁用</span>')
+            + detailRow('经度（GCJ-02）', detailCoordinate(row.lon))
+            + detailRow('纬度（GCJ-02）', detailCoordinate(row.lat))
+            + detailRow('创建时间', detailText(row.create_time))
+            + detailRow('更新时间', detailText(row.update_time))
+            + '</table>'
+            + '</div>';
+
+        layer.open({
+            type: 1,
+            title: '区划详情 · ' + escapeDetailHtml(row.name || ''),
+            area: ['640px', 'auto'],
+            shadeClose: true,
+            content: html
+        });
+    }
+
+    /**
+     * 双击行加载详情：列表行已含全部字段，只需补齐层级路径与子级数量
+     * 两个请求并发，任一失败也不阻断弹层（对应位置显示占位提示）
+     */
+    function openRegionDetail(row){
+        var loading = layer.load(2);
+        // 村/社区为最末级，无子级可查，直接按空集处理并少发一次请求
+        var isLeaf = row.level >= 5;
+        var detail = {path: [], children: isLeaf ? [] : null};
+        var pending = isLeaf ? 1 : 2;
+
+        function finish(){
+            if(--pending > 0){
+                return;
+            }
+            layer.close(loading);
+            showRegionDetail(row, detail.path, detail.children);
+        }
+
+        $.get('/api/admin/cmspro/region/path', {code: row.code}, function(res){
+            if(res && res.code === 0){
+                detail.path = res.data || [];
+            }
+        }).always(finish);
+
+        if(!isLeaf){
+            $.get('/api/admin/cmspro/region/children', {code: row.code}, function(res){
+                if(res && res.code === 0){
+                    detail.children = res.data || [];
+                }
+            }).always(finish);
+        }
+    }
 
     // ==================== 更新坐标（开发模式） ====================
     // 依赖百度地图 JS AK（「应用设置」生效配置优先，其次「地图」应用），仅在 APP_DEV_MODE=true 时渲染入口
@@ -1863,9 +2016,11 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         });
     });
 
-    // 同步/导入共用的进度条弹层：打开弹层并按 progress_token 轮询 sync-progress 接口刷新进度
-    // 返回 {token, finish}：token 随请求提交给服务端上报进度，finish() 停止轮询并关闭弹层
-    function openProgressLayer(title){
+    // 同步/导入共用的进度条弹层：按 progress_token 轮询 sync-progress 接口刷新进度
+    // 后端启动接口会立即返回（落库任务在响应发送后继续执行），进度与结果统一由轮询获取：
+    // 轮询到 done/error 终态时关闭弹层并回调 onDone(progress)，由调用方提示结果与刷新页面
+    // 返回 {token, fail(msg)}：token 随请求提交上报进度，fail() 用于启动失败时停止轮询并关层
+    function openProgressLayer(title, onDone){
         var token = 'prog_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
         var idx = layer.open({
             type: 1,
@@ -1879,30 +2034,51 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                     '<div class="layui-progress-bar layui-bg-blue" lay-percent="0%"></div>' +
                 '</div>' +
                 '<div style="font-size:12px;color:#999;margin-top:16px;line-height:1.7;">' +
-                    '操作将<b style="color:#e6a23c;">全量替换</b>本地区划数据，请勿关闭或刷新页面。</div>' +
+                    '操作将<b style="color:#e6a23c;">全量替换</b>本地区划数据，请勿关闭或刷新页面；' +
+                    '五级全量数据较大时可能需要十余分钟，进度可稍后回到本页查看。</div>' +
                 '</div>'
         });
         element.render('progress');
 
+        var finished = false;
+        var maxTimer = setTimeout(function(){
+            if(finished) return;
+            finished = true;
+            clearInterval(pollTimer);
+            layer.close(idx);
+            layer.msg('任务执行超时，请稍后回到本页查看结果', {icon: 2, time: 10000});
+        }, 30 * 60 * 1000);
         var pollTimer = setInterval(function(){
             $.get('/api/admin/cmspro/region/sync-progress', {progress_token: token}, function(p){
-                if(p.code === 0 && p.data && p.data.state !== 'idle'){
-                    element.progress('syncProgress', p.data.percent + '%');
-                    $('#syncStageText').text(p.data.stage || p.data.message || '');
+                if(finished || !p || p.code !== 0 || !p.data || p.data.state === 'idle'){
+                    return;
+                }
+                element.progress('syncProgress', p.data.percent + '%');
+                $('#syncStageText').text(p.data.stage || p.data.message || '');
+                if(p.data.state === 'done' || p.data.state === 'error'){
+                    finished = true;
+                    clearInterval(pollTimer);
+                    clearTimeout(maxTimer);
+                    layer.close(idx);
+                    if(onDone) onDone(p.data);
                 }
             });
         }, 800);
 
         return {
             token: token,
-            finish: function(){
+            fail: function(msg){
+                if(finished) return;
+                finished = true;
                 clearInterval(pollTimer);
+                clearTimeout(maxTimer);
                 layer.close(idx);
+                layer.msg(msg || '请求失败，请重试', {icon: 2, time: 8000});
             }
         };
     }
 
-    // 在线同步官方数据（消费端：检查更新 → 确认 → 全量替换落库，1 分钟内完成）
+    // 在线同步官方数据（消费端：检查更新 → 确认 → 接口立即返回进度令牌，后台全量替换落库，靠 sync-progress 轮询到终态）
     $('#syncRegionDataBtn').on('click', function(){
         var btn = $(this);
         btn.addClass('layui-btn-disabled').prop('disabled', true);
@@ -1918,37 +2094,75 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                 layer.msg(info.message || '版本服务暂不可用', {icon: 2});
                 return;
             }
-            if(!info.need_update){
-                layer.msg(info.message && info.message !== 'ok' ? info.message : ('本地已是最新版本 ' + (info.local_version || '-') + '，无需同步'), {icon: 1});
+            // 本地版本高于官方版本时后端会给出具体原因（message 非 ok），直接提示，不再询问同步级别
+            if(!info.need_update && info.message && info.message !== 'ok'){
+                layer.msg(info.message, {icon: 1});
                 return;
             }
+            // 本地已是最新且已同步到五级：没有可补齐的深层数据
+            var localLevel = parseInt(info.local_level || 0, 10);
+            if(!info.need_update && localLevel >= 5){
+                layer.msg('本地已是最新版本 ' + (info.local_version || '-') + '，无需同步', {icon: 1});
+                return;
+            }
+
             var stats = info.stats || {};
-            var html = '<div style="text-align:left;line-height:2;">' +
-                '<b>发现官方区划数据新版本</b><br>' +
-                '最新版本：<b>' + info.version + '</b>（本地：' + (info.local_version || '未同步') + '）<br>' +
+            var count3 = (stats.province || 0) + (stats.city || 0) + (stats.district || 0);
+            var count4 = count3 + (stats.street || 0);
+            // 同步级别单选：只开放 3/4/5，浅级别可显著减少落库数据量与耗时
+            var levelOptions = [
+                {value: 3, name: '区县', count: count3},
+                {value: 4, name: '街道', count: count4},
+                {value: 5, name: '村/社区', count: info.region_count || 0}
+            ];
+            // 默认选中已同步级别（未知或浅于三级时按五级全量）
+            var defaultLevel = (localLevel >= 3 && localLevel <= 5) ? localLevel : 5;
+            var radioHtml = '';
+            for(var i = 0; i < levelOptions.length; i++){
+                var opt = levelOptions[i];
+                radioHtml += '<label style="display:block;padding:7px 10px;border:1px solid #e6e6e6;border-radius:4px;margin-bottom:8px;cursor:pointer;">' +
+                    '<input type="radio" name="syncMaxLevel" value="' + opt.value + '"' + (opt.value === defaultLevel ? ' checked' : '') + ' style="vertical-align:middle;margin-right:8px;">' +
+                    '<b>同步至「' + opt.name + '」级（' + opt.value + ' 级）</b>' +
+                    '<span style="color:#999;margin-left:8px;">约 ' + opt.count + ' 条</span>' +
+                    '</label>';
+            }
+
+            var html = '<div style="text-align:left;line-height:1.9;">' +
+                (info.need_update
+                    ? '<b>发现官方区划数据新版本</b><br>'
+                    : '<b>本地已是最新版本 ' + (info.local_version || '-') + '，可补齐更深层级数据</b><br>') +
+                '最新版本：<b>' + info.version + '</b>（本地：' + (info.local_version || '未同步') +
+                    '，已同步至 ' + (localLevel >= 1 ? localLevel + ' 级' : '未知') + '）<br>' +
                 '发布时间：' + (info.release_time || '-') + '<br>' +
-                '记录总数：<b>' + info.region_count + '</b> 条（省 ' + (stats.province || 0) + ' / 市 ' + (stats.city || 0) + ' / 区县 ' + (stats.district || 0) + ' / 街道 ' + (stats.street || 0) + ' / 村 ' + (stats.village || 0) + '）<br>' +
-                '更新说明：' + (info.changelog || '无') + '<br><br>' +
-                '<span style="color:#e6a23c;">⚠ 同步将<b style="color:#e6a23c;">全量替换</b>本地区划数据（本地手工修改会被覆盖），完成后自动重建层级关系与缓存。数据量较大时可能需要数分钟，确定同步吗？</span>' +
+                '官方记录总数：<b>' + info.region_count + '</b> 条（省 ' + (stats.province || 0) + ' / 市 ' + (stats.city || 0) + ' / 区县 ' + (stats.district || 0) + ' / 街道 ' + (stats.street || 0) + ' / 村 ' + (stats.village || 0) + '）<br>' +
+                '更新说明：' + (info.changelog || '无') + '<br>' +
+                '<div style="margin:12px 0 6px;color:#666;">选择本次同步的数据级别（级别越浅，落库数据量与耗时越少）：</div>' +
+                radioHtml +
+                '<span style="color:#e6a23c;">⚠ 同步采用<b>全量替换</b>：本地手工修改会被覆盖，且深于所选级别的既有数据（如已同步的村/社区）将一并清除，完成后自动重建层级关系与缓存。</span>' +
                 '</div>';
-            layer.confirm(html, {title: '在线同步官方数据', btn: ['开始同步', '取消'], area: '540px'}, function(index){
+            layer.confirm(html, {title: '在线同步官方数据', btn: ['开始同步', '取消'], area: '600px'}, function(index){
+                var maxLevel = parseInt($('input[name="syncMaxLevel"]:checked').val() || '5', 10);
                 layer.close(index);
 
-                var prog = openProgressLayer('正在同步官方数据');
-
-                $.post('/api/admin/cmspro/region/sync-region-data', {version: null, progress_token: prog.token}, function(r){
-                    prog.finish();
-                    if(r.code === 0 && r.data && r.data.synced){
-                        layer.msg('同步完成：版本 ' + r.data.version + '，共 ' + r.data.count + ' 条，耗时 ' + r.data.duration + ' 秒', {icon: 1, time: 8000});
+                var prog = openProgressLayer('正在同步官方数据', function(p){
+                    btn.removeClass('layui-btn-disabled').prop('disabled', false);
+                    if(p.state === 'done'){
+                        layer.msg(p.message || '同步完成', {icon: 1, time: 8000});
                         setTimeout(function(){ location.reload(); }, 2500);
-                    } else if(r.code === 0){
-                        layer.msg(r.message || '无需同步', {icon: 1});
                     } else {
-                        layer.msg(r.message || '同步失败', {icon: 2, time: 8000});
+                        layer.msg(p.message || '同步失败', {icon: 2, time: 12000});
+                    }
+                });
+
+                btn.addClass('layui-btn-disabled').prop('disabled', true);
+                $.post('/api/admin/cmspro/region/sync-region-data', {progress_token: prog.token, max_level: maxLevel}, function(r){
+                    if(r.code !== 0){
+                        prog.fail(r.message);
+                        btn.removeClass('layui-btn-disabled').prop('disabled', false);
                     }
                 }).fail(function(){
-                    prog.finish();
-                    layer.msg('同步请求失败，请重试', {icon: 2});
+                    prog.fail('同步请求失败，请重试');
+                    btn.removeClass('layui-btn-disabled').prop('disabled', false);
                 });
             });
         }).fail(function(){
@@ -1978,12 +2192,22 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
             function(index){
                 layer.close(index);
 
+                var btn = $('#importSnapshotBtn');
+                var prog = openProgressLayer('正在导入快照包', function(p){
+                    btn.removeClass('layui-btn-disabled').prop('disabled', false);
+                    if(p.state === 'done'){
+                        layer.msg(p.message || '导入完成', {icon: 1, time: 8000});
+                        setTimeout(function(){ location.reload(); }, 2500);
+                    } else {
+                        layer.msg(p.message || '导入失败', {icon: 2, time: 12000});
+                    }
+                });
+
                 var formData = new FormData();
                 formData.append('file', file);
-                var prog = openProgressLayer('正在导入快照包');
                 formData.append('progress_token', prog.token);
 
-                $('#importSnapshotBtn').addClass('layui-btn-disabled').prop('disabled', true);
+                btn.addClass('layui-btn-disabled').prop('disabled', true);
                 $.ajax({
                     url: '/api/admin/cmspro/region/import-snapshot',
                     type: 'POST',
@@ -1991,22 +2215,16 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                     processData: false,
                     contentType: false,
                     success: function(r){
-                        prog.finish();
-                        if(r.code === 0 && r.data && r.data.synced){
-                            layer.msg('导入完成：版本 ' + r.data.version + '，共 ' + r.data.count + ' 条，耗时 ' + r.data.duration + ' 秒', {icon: 1, time: 8000});
-                            setTimeout(function(){ location.reload(); }, 2500);
-                        } else {
-                            layer.msg(r.message || '导入失败', {icon: 2, time: 8000});
+                        if(r.code !== 0){
+                            prog.fail(r.message);
+                            btn.removeClass('layui-btn-disabled').prop('disabled', false);
                         }
                     },
                     error: function(xhr){
-                        prog.finish();
                         var msg = '导入请求失败，请重试';
                         try { msg = (JSON.parse(xhr.responseText) || {}).message || msg; } catch (e) {}
-                        layer.msg(msg, {icon: 2, time: 8000});
-                    },
-                    complete: function(){
-                        $('#importSnapshotBtn').removeClass('layui-btn-disabled').prop('disabled', false);
+                        prog.fail(msg);
+                        btn.removeClass('layui-btn-disabled').prop('disabled', false);
                     }
                 });
             }
@@ -2959,10 +3177,11 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         });
     }
 
-    // 检测是否已有数据，无数据时提示一键导入（本地数据链路）
+    // 检测是否已有数据，无数据时引导到推荐链路：在线同步官方数据（版本服务器）或导入快照包（站点间分享）
+    // 「一键导入」收纳在仅开发模式可见的「旧版数据更新」面板内，生产站点看不到，故不再作为提示入口
     $.get('/api/admin/cmspro/region/stats', function(res){
         if(res.code === 0 && res.data.total === 0){
-            layer.msg('暂无区划数据，请点击「一键导入」按钮导入', {icon: 0, time: 5000});
+            layer.msg('暂无区划数据，请点击「在线同步官方数据」从版本服务器同步，或点击「导入快照包」导入其他站点分享的快照包', {icon: 0, time: 6000});
         }
     });
 });

@@ -5,11 +5,14 @@ namespace App\Apps\CmsproRegion\Controllers\Admin;
 use App\Apps\CmsproRegion\Models\Region;
 use App\Apps\CmsproRegion\Services\MapSettingService;
 use App\Apps\CmsproRegion\Services\RegionDataSyncService;
+use App\Apps\CmsproRegion\Services\RegionLevelService;
 use App\Apps\CmsproRegion\Services\RegionService;
 use App\Apps\CmsproRegion\Services\RegionSnapshotService;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 class RegionController extends Controller
 {
@@ -21,16 +24,20 @@ class RegionController extends Controller
 
     protected MapSettingService $mapSettingService;
 
+    protected RegionLevelService $regionLevels;
+
     public function __construct(
         RegionService $regionService,
         RegionSnapshotService $regionSnapshotService,
         RegionDataSyncService $regionDataSyncService,
-        MapSettingService $mapSettingService
+        MapSettingService $mapSettingService,
+        RegionLevelService $regionLevels
     ) {
         $this->regionService = $regionService;
         $this->regionSnapshotService = $regionSnapshotService;
         $this->regionDataSyncService = $regionDataSyncService;
         $this->mapSettingService = $mapSettingService;
+        $this->regionLevels = $regionLevels;
     }
 
     /**
@@ -51,9 +58,15 @@ class RegionController extends Controller
 
     /**
      * 数据演示页面
+     *
+     * 同时服务于后台（/admin/cmspro/region/demo）与前台公开访问（/cmspro/region/demo）：
+     * 前台模式只读，接口切换到公开只读 API，并隐藏后台导入指引。
      */
-    public function demo()
+    public function demo(Request $request)
     {
+        $publicMode = $request->route('demoMode') === 'public';
+        $apiBase = $publicMode ? '/api/cmspro/region' : '/api/admin/cmspro/region';
+
         $stats = $this->regionService->getStats();
         $geoStats = $this->regionService->getGeoStats();
 
@@ -63,10 +76,35 @@ class RegionController extends Controller
         $hasVillage = ($hasStreet && $stats['village'] > 0);
         $hasGeo = ($geoStats['with_geo'] > 0);
 
+        // 「应用设置」中的显示级别：库里有数据但级别未放开时，选择器不渲染该层下拉
+        $maxLevel = $this->regionLevels->maxLevel();
+        $showDistrict = $hasLevel3 && $maxLevel >= Region::LEVEL_DISTRICT;
+        $showStreet = $hasStreet && $maxLevel >= Region::LEVEL_STREET;
+        $showVillage = $hasVillage && $maxLevel >= Region::LEVEL_VILLAGE;
+        $levelLabel = $this->regionLevels->levelLabel($maxLevel);
+        // 选择器可渲染：至少要有省市数据；显示级别低于区县时降级为仅省/市两级下拉
+        $canSelect = $stats['city'] > 0 && ($hasLevel3 || $maxLevel < Region::LEVEL_DISTRICT);
+
         // 地图配置：未配置或加载失败时演示页回退 Leaflet + 高德瓦片
         $mapConfig = $this->mapSettingService->resolveEffective();
 
-        return view('cmsproregion::Admin.demo', compact('stats', 'geoStats', 'hasLevel3', 'hasStreet', 'hasVillage', 'hasGeo', 'mapConfig'));
+        return view('cmsproregion::Admin.demo', compact(
+            'stats',
+            'geoStats',
+            'hasLevel3',
+            'hasStreet',
+            'hasVillage',
+            'hasGeo',
+            'maxLevel',
+            'canSelect',
+            'showDistrict',
+            'showStreet',
+            'showVillage',
+            'levelLabel',
+            'mapConfig',
+            'apiBase',
+            'publicMode'
+        ));
     }
 
     /**
@@ -419,8 +457,9 @@ class RegionController extends Controller
             $query->where('parent_id', $parentId);
         }
 
-        $page = (int) $request->input('page', 1);
-        $limit = (int) $request->input('limit', 20);
+        $page = max(1, (int) $request->input('page', 1));
+        // 单页上限 200：该接口同时开放给前台公开访问，避免被构造超大 limit 拉取全量数据
+        $limit = min(max((int) $request->input('limit', 20), 1), 200);
 
         $total = $query->count();
         $list = $query->orderBy('code')
@@ -676,34 +715,33 @@ class RegionController extends Controller
     /**
      * 在线同步官方数据（消费端：全量替换落库）
      *
-     * 下载 → SHA-256 校验 → 解包 → 契约校验 → 单事务全删重插 → 闭包表重建 → 清缓存 → 记版本。
-     * 失败整体回滚，本地数据零影响。
+     * 下载 → SHA-256 校验 → 解包 → 契约校验 → staging 分批落库 → 闭包表重建 →
+     * RENAME TABLE 原子切换 → 清缓存 → 记版本。
+     *
+     * 任务在响应发送后继续执行（见 runInBackground）：接口立即返回进度令牌，
+     * 前端通过 sync-progress 轮询到 done/error 终态，避免长任务触发网关超时。
      */
     public function syncRegionData(Request $request): JsonResponse
     {
-        set_time_limit(600);
+        $token = $this->progressToken($request);
+        $version = $request->input('version');
+        $maxLevel = (int) $request->input('max_level', RegionLevelService::MAX_LEVEL);
 
-        // 长任务执行前释放 session 锁，避免前端进度轮询请求被 session 写锁阻塞
-        if (method_exists($request->session(), 'save')) {
-            $request->session()->save();
-        }
-
-        try {
-            $result = $this->regionDataSyncService
-                ->withProgressToken($request->input('progress_token'))
-                ->sync($request->input('version'));
-        } catch (\RuntimeException $e) {
+        // 同步级别只开放区县（3）/街道（4）/村社区（5）：更浅级别的选择器无实际意义，
+        // 且全量替换语义下选浅级别会清除既有深层数据，需挡住误传参数
+        if (! in_array($maxLevel, [3, 4, 5], true)) {
             return response()->json([
                 'code' => 1,
-                'message' => $e->getMessage(),
+                'message' => '同步级别仅支持 3（区县）/4（街道）/5（村/社区）',
+                'data' => null,
             ]);
         }
 
-        return response()->json([
-            'code' => 0,
-            'message' => $result['message'] ?? '同步完成',
-            'data' => $result,
-        ]);
+        return $this->runInBackground($token, function () use ($token, $version, $maxLevel) {
+            return $this->regionDataSyncService
+                ->withProgressToken($token)
+                ->sync($version, $maxLevel);
+        });
     }
 
     /**
@@ -726,14 +764,12 @@ class RegionController extends Controller
      * 导入快照包（消费端：全量替换落库）
      *
      * 接收其他站点「导出快照包」生成的 ZIP（regions.json + 可选 meta.json），
-     * 校验契约后单事务全量替换本地区划数据，失败整体回滚零影响。
-     * 与在线同步共用进度机制（progress_token + sync-progress 轮询）。
+     * 校验契约后全量替换本地区划数据（staging + RENAME 原子切换），失败零影响。
+     * 与在线同步共用进度机制（progress_token + sync-progress 轮询）与后台执行策略。
      */
     public function importSnapshot(Request $request): JsonResponse
     {
-        set_time_limit(600);
-
-        $data = $request->validate([
+        $request->validate([
             'file' => ['required', 'file', 'max:51200', 'mimes:zip'],
             'progress_token' => ['nullable', 'string', 'max:64'],
         ], [
@@ -742,35 +778,114 @@ class RegionController extends Controller
             'file.mimes' => '仅支持 zip 格式的快照包',
         ]);
 
-        // 长任务执行前释放 session 锁，避免前端进度轮询请求被 session 写锁阻塞
-        if (method_exists($request->session(), 'save')) {
-            $request->session()->save();
-        }
+        $token = $this->progressToken($request);
 
-        // 上传文件暂存至 storage/app（zip 校验与解包需要真实磁盘路径）
+        // 上传文件暂存至 storage/app（zip 校验与解包需要真实磁盘路径；响应返回后临时文件会被回收）
         $tempPath = storage_path('app/cmspro-region-import-' . uniqid() . '.zip');
 
         try {
             $request->file('file')->move(dirname($tempPath), basename($tempPath));
-
-            $result = $this->regionDataSyncService
-                ->withProgressToken($request->input('progress_token'))
-                ->importFromSnapshot($tempPath);
-        } catch (\RuntimeException $e) {
+        } catch (\Throwable $e) {
             return response()->json([
                 'code' => 1,
-                'message' => $e->getMessage(),
+                'message' => '快照包接收失败：' . $e->getMessage(),
             ]);
-        } finally {
+        }
+
+        return $this->runInBackground($token, function () use ($token, $tempPath) {
+            try {
+                return $this->regionDataSyncService
+                    ->withProgressToken($token)
+                    ->importFromSnapshot($tempPath);
+            } finally {
+                if (is_file($tempPath)) {
+                    @unlink($tempPath);
+                }
+            }
+        }, function () use ($tempPath): void {
+            // 互斥锁占用导致任务未启动时，及时清理已落盘的临时上传包
             if (is_file($tempPath)) {
                 @unlink($tempPath);
             }
+        });
+    }
+
+    // ========== 长任务后台执行（同步 / 快照包导入） ==========
+
+    /** 同步/导入任务互斥锁（响应先返回、任务仍在后台执行，需防重复触发并发写临时表） */
+    private const TASK_LOCK_KEY = 'cmspro_region:data_task_lock';
+
+    /** 互斥锁存活秒数（覆盖五级全量最长耗时，任务结束即释放） */
+    private const TASK_LOCK_TTL = 1800;
+
+    /**
+     * 解析进度令牌：前端传入则沿用，未传自动生成。
+     */
+    protected function progressToken(Request $request): string
+    {
+        $token = trim((string) $request->input('progress_token'));
+
+        return $token !== '' ? $token : 'prog_' . uniqid();
+    }
+
+    /**
+     * 长任务后台执行：先返回响应，任务在响应发送后继续执行。
+     *
+     * 五级全量（64.8 万条区划 + 315 万条闭包）受磁盘随机写 IO 限制约需 13 分钟，
+     * 远超 nginx `fastcgi_read_timeout`（默认 300s）：同步执行会让前端先收到超时错误，
+     * 而 PHP 侧仍在跑（`max_execution_time=0`），造成「已超时但数据最终变了」的错觉。
+     * 改为 `app()->terminating()` 注册任务——`Response::send()` 内已调用
+     * `fastcgi_finish_request()`，请求连接随响应关闭，任务在后台继续，前端轮询
+     * `sync-progress` 直到 done/error 终态。
+     *
+     * 单元测试环境无真实请求生命周期（`terminate()` 不会被调用），直接同步执行以便断言。
+     *
+     * @param callable():array $task 返回服务层结果数组的任务
+     * @param callable|null $onRejected 互斥锁占用、任务未启动时的清理回调（如删除临时上传包）
+     */
+    protected function runInBackground(string $token, callable $task, ?callable $onRejected = null): JsonResponse
+    {
+        if (! Cache::add(self::TASK_LOCK_KEY, $token, self::TASK_LOCK_TTL)) {
+            if ($onRejected !== null) {
+                $onRejected();
+            }
+
+            return response()->json([
+                'code' => 1,
+                'message' => '已有区划数据同步/导入任务正在执行，请等待完成后再试',
+            ]);
+        }
+
+        set_time_limit(0);
+        ignore_user_abort(true);
+
+        // 任务执行前释放 session 写锁，避免前端进度轮询请求被 session 写锁阻塞
+        if (method_exists(request()->session(), 'save')) {
+            request()->session()->save();
+        }
+
+        $runner = function () use ($token, $task): void {
+            try {
+                $task();
+            } catch (\Throwable $e) {
+                // 服务层内部已写入 error 进度；此处兜底服务层之外抛出的异常（如检查更新失败）
+                $this->regionDataSyncService->failProgress($token, $e->getMessage());
+                Log::warning('[cmspro.region] 区划数据任务失败', ['error' => $e->getMessage()]);
+            } finally {
+                Cache::forget(self::TASK_LOCK_KEY);
+            }
+        };
+
+        if (app()->runningUnitTests()) {
+            $runner();
+        } else {
+            app()->terminating($runner);
         }
 
         return response()->json([
             'code' => 0,
-            'message' => $result['message'] ?? '导入完成',
-            'data' => $result,
+            'message' => '任务已启动，正在后台执行',
+            'data' => ['started' => true, 'progress_token' => $token],
         ]);
     }
 

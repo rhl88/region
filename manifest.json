@@ -1,8 +1,8 @@
 {
     "id": "cmspro.region",
     "name": "中国行政区划",
-    "description": "中国行政区划数据服务，支持省、市、区县三级联动及街道四级、村/社区五级可选，提供API供其他应用调用",
-    "version": "1.6.0",
+    "description": "中国行政区划数据服务，支持省、市、区县三级联动及街道四级、村/社区五级可选，支持“行政区边界”查询，提供API供其他应用调用",
+    "version": "1.7.0",
     "author": "CmsPro",
     "icon": "fa fa-map-marker",
     "require": {
@@ -46,6 +46,15 @@
             ]
         }
     ],
+    "home_menus": [
+        {
+            "title": "区划演示",
+            "icon": "fa fa-map-marker",
+            "path": "/cmspro/region/demo",
+            "code": "home_cmspro_region_demo",
+            "order": 50
+        }
+    ],
     "permissions": [
         {
             "code": "cmspro.region.manage",
@@ -75,6 +84,26 @@
                     "type": "text",
                     "value": "",
                     "tips": "最近一次在线同步的官方区划数据版本号（系统自动维护，请勿手工修改）"
+                },
+                {
+                    "name": "data_sync_level",
+                    "title": "已同步数据级别",
+                    "type": "text",
+                    "value": "",
+                    "tips": "最近一次在线同步落库的最大区划级别：3=省市区县、4=含街道、5=含村/社区（系统自动维护，请勿手工修改）"
+                }
+            ]
+        },
+        {
+            "name": "region_settings",
+            "title": "区划设置",
+            "items": [
+                {
+                    "name": "region_max_level",
+                    "title": "区划显示级别",
+                    "type": "text",
+                    "value": "5",
+                    "tips": "数据演示页「区划选择器」显示的最大级别：1=省、2=市、3=区县、4=街道、5=村/社区。在线同步时所选级别会自动写入本项；仅影响演示页选择器，不改变对外 API 返回。"
                 }
             ]
         },

@@ -93,19 +93,29 @@
                 </div>
             </div>
         </div>
+        @if($maxLevel < 5)
+        {{-- 上方统计始终反映库中真实数据量，此处仅说明选择器因级别设置而少渲染的层级 --}}
+        <div style="padding:0 15px 12px;color:#999;font-size:12px;line-height:1.7;">
+            <i class="fa fa-info-circle"></i>
+            当前「应用设置 · 区划级别设置」为 <b>{{ $levelLabel }}</b>，区划选择器仅渲染至该级别；
+            上方统计为库中真实数据量，未渲染层级的数据依然存在，对外 API 返回不受影响。
+            @if(!$publicMode)<a href="/admin/cmspro/region/setting" style="color:#1e9fff;">前往调整</a>@endif
+        </div>
+        @endif
     </div>
 
     {{-- 缺失数据导入引导 --}}
-    @if(!$hasLevel3 || !$hasStreet || !$hasGeo)
+    @if(!$publicMode && (!$hasLevel3 || !$hasStreet || !$hasGeo))
     <div class="layui-card demo-card">
         <div class="layui-card-header">数据导入引导</div>
         <div class="layui-card-body">
             @if(!$hasLevel3)
             <div class="import-guide">
                 <div class="guide-title"><i class="fa fa-exclamation-triangle"></i> 三级区划数据未导入</div>
-                <div class="guide-desc">省/市/区县三级数据是区划选择器的基础，未导入时无法进行数据演示。请先在数据管理页点击「一键导入」完成全量数据导入（无需联网），或仅导入三级数据后再使用演示功能。</div>
+                <div class="guide-desc">省/市/区县三级数据是区划选择器的基础，未导入时无法进行数据演示。请在数据管理页点击「在线同步官方数据」（推荐，从版本服务器下载并全量替换，可选同步级别以减轻数据库压力），或点击「导入快照包」导入其他站点分享的 ZIP 快照包（五级全量）。</div>
                 <div class="guide-action">
-                    <a href="/admin/cmspro/region" class="layui-btn layui-btn-normal layui-btn-sm"><i class="fa fa-database"></i> 前往一键导入</a>
+                    <a href="/admin/cmspro/region" class="layui-btn layui-btn-normal layui-btn-sm"><i class="fa fa-cloud-download"></i> 前往在线同步官方数据</a>
+                    <a href="/admin/cmspro/region" class="layui-btn layui-btn-primary layui-btn-sm"><i class="fa fa-upload"></i> 前往导入快照包</a>
                 </div>
             </div>
             @endif
@@ -113,9 +123,10 @@
             @if(!$hasStreet)
             <div class="import-guide">
                 <div class="guide-title"><i class="fa fa-exclamation-triangle"></i> 街道/乡镇数据未导入</div>
-                <div class="guide-desc">街道级数据为可选数据，未导入时区划选择器仅支持省/市/区县三级联动。如需四级联动演示，请导入街道数据。</div>
+                <div class="guide-desc">街道级数据为可选数据，未导入时区划选择器仅支持省/市/区县三级联动。如需四级联动演示，请在数据管理页点击「在线同步官方数据」，并把同步级别选为「街道」级（4 级）或「村/社区」级（5 级）；「导入快照包」始终为五级全量，导入后同样包含街道与村社区数据。</div>
                 <div class="guide-action">
-                    <a href="/admin/cmspro/region" class="layui-btn layui-btn-warm layui-btn-sm"><i class="fa fa-building"></i> 前往导入街道数据</a>
+                    <a href="/admin/cmspro/region" class="layui-btn layui-btn-normal layui-btn-sm"><i class="fa fa-cloud-download"></i> 前往在线同步官方数据</a>
+                    <a href="/admin/cmspro/region" class="layui-btn layui-btn-primary layui-btn-sm"><i class="fa fa-upload"></i> 前往导入快照包</a>
                 </div>
             </div>
             @endif
@@ -123,7 +134,7 @@
             @if(!$hasGeo)
             <div class="import-guide">
                 <div class="guide-title"><i class="fa fa-exclamation-triangle"></i> 地理位置数据未导入</div>
-                <div class="guide-desc">经纬度数据用于展示区划的地理位置信息，未导入时无法演示地址位置信息。如需查看经纬度，请导入地理位置数据。</div>
+                <div class="guide-desc">经纬度数据用于展示区划的地理位置信息，未导入时无法演示地址位置信息。坐标随「在线同步官方数据」或「导入快照包」的数据包一并落库（包内含经纬度时即有坐标）；若同步后仍无坐标，可在数据管理页单独导入地理位置数据。</div>
                 <div class="guide-action">
                     <a href="/admin/cmspro/region" class="layui-btn layui-btn-success layui-btn-sm"><i class="fa fa-map-marker"></i> 前往导入地理位置</a>
                 </div>
@@ -137,18 +148,20 @@
     <div class="layui-card demo-card">
         <div class="layui-card-header">区划选择器演示</div>
         <div class="layui-card-body">
-            @if($hasLevel3)
+            @if($canSelect)
             <div class="demo-split">
                 {{-- 左侧：级联选择 + 地理位置信息 --}}
                 <div class="demo-left">
                     <div class="cascader-area">
                         <select id="provinceSelect"><option value="">请选择省份</option></select>
                         <select id="citySelect"><option value="">请选择城市</option></select>
+                        @if($showDistrict)
                         <select id="districtSelect"><option value="">请选择区县</option></select>
-                        @if($hasStreet)
+                        @endif
+                        @if($showStreet)
                         <select id="streetSelect"><option value="">请选择街道/乡镇</option></select>
                         @endif
-                        @if($hasVillage)
+                        @if($showVillage)
                         <select id="villageSelect"><option value="">请选择村/社区</option></select>
                         @endif
                         <div class="selected-path" id="selectedPath">请选择区划</div>
@@ -202,7 +215,7 @@
             @else
             <div class="empty-state">
                 <div class="empty-icon"><i class="fa fa-database"></i></div>
-                <div class="empty-text">三级区划数据未导入，无法演示区划选择器<br>请先在数据管理页点击「一键导入」</div>
+                <div class="empty-text">三级区划数据未导入，无法演示区划选择器<br>{{ $publicMode ? '请联系站点管理员导入区划数据' : '请先在数据管理页点击「在线同步官方数据」或「导入快照包」' }}</div>
             </div>
             @endif
         </div>
@@ -217,26 +230,30 @@
 layui.use(['layer', 'jquery'], function(){
     var layer = layui.layer;
     var $ = layui.jquery;
+    // 后台访问走权限接口，前台公开访问（/cmspro/region/demo）走只读接口
+    var API_BASE = '{{ $apiBase }}';
 
     $.ajaxSetup({
         headers: { 'X-CSRF-TOKEN': '{{ csrf_token() }}' }
     });
 
-    var hasLevel3 = {{ $hasLevel3 ? 'true' : 'false' }};
-    var hasStreet = {{ $hasStreet ? 'true' : 'false' }};
-    var hasVillage = {{ $hasVillage ? 'true' : 'false' }};
+    // canSelect 与 Blade 中选择器是否渲染一致；hasStreet / hasVillage 取「数据存在且级别已放开」，
+    // 下拉未渲染时为 false，相关事件绑定与 DOM 操作一并跳过
+    var canSelect = {{ $canSelect ? 'true' : 'false' }};
+    var hasStreet = {{ $showStreet ? 'true' : 'false' }};
+    var hasVillage = {{ $showVillage ? 'true' : 'false' }};
     var hasGeo = {{ $hasGeo ? 'true' : 'false' }};
     var levelNames = {1:'省/直辖市', 2:'市', 3:'区/县', 4:'街道/乡镇', 5:'村/社区'};
     // 村/社区下拉的空选项，上级切换时统一用它复位
     var VILLAGE_EMPTY = '<option value="">请选择村/社区</option>';
 
-    if(!hasLevel3){
+    if(!canSelect){
         return;
     }
 
     // 加载省份列表
     function loadProvinces(){
-        $.get('/api/admin/cmspro/region/provinces', function(res){
+        $.get(API_BASE + '/provinces', function(res){
             if(res.code !== 0) return;
             var html = '<option value="">请选择省份</option>';
             res.data.forEach(function(item){
@@ -267,7 +284,7 @@ layui.use(['layer', 'jquery'], function(){
         var provinceName = $('#provinceSelect option:selected').text();
         $('#selectedPath').text(provinceName);
         $('#geoInfo').hide();
-        $.get('/api/admin/cmspro/region/children?code='+code, function(res){
+        $.get(API_BASE + '/children?code='+code, function(res){
             if(res.code !== 0) return;
             var html = '<option value="">请选择城市</option>';
             res.data.forEach(function(item){
@@ -299,7 +316,7 @@ layui.use(['layer', 'jquery'], function(){
         $('#selectedPath').text(provinceName + ' > ' + cityName);
         $('#geoInfo').hide();
         resetMapView();
-        $.get('/api/admin/cmspro/region/children?code='+code, function(res){
+        $.get(API_BASE + '/children?code='+code, function(res){
             if(res.code !== 0) return;
             var html = '<option value="">请选择区县</option>';
             res.data.forEach(function(item){
@@ -340,7 +357,7 @@ layui.use(['layer', 'jquery'], function(){
 
         // 有街道数据时加载街道
         if(hasStreet){
-            $.get('/api/admin/cmspro/region/children?code='+code, function(res){
+            $.get(API_BASE + '/children?code='+code, function(res){
                 if(res.code !== 0) return;
                 var html = '<option value="">请选择街道/乡镇</option>';
                 res.data.forEach(function(item){
@@ -373,7 +390,7 @@ layui.use(['layer', 'jquery'], function(){
             if(hasVillage){
                 $('#villageSelect').html(VILLAGE_EMPTY);
                 if(code){
-                    $.get('/api/admin/cmspro/region/children?code='+code, function(res){
+                    $.get(API_BASE + '/children?code='+code, function(res){
                         if(res.code !== 0) return;
                         var villageHtml = VILLAGE_EMPTY;
                         res.data.forEach(function(item){
@@ -410,13 +427,13 @@ layui.use(['layer', 'jquery'], function(){
     // 加载地理位置信息
     function loadGeoInfo(code){
         // 先获取区划详情（含经纬度）
-        $.get('/api/admin/cmspro/region/path?code='+code, function(res){
+        $.get(API_BASE + '/path?code='+code, function(res){
             if(res.code !== 0) return;
             var pathArr = res.data.map(function(item){ return item.name; });
             var fullPath = pathArr.join(' > ');
 
             // 通过列表接口获取经纬度
-            $.get('/api/admin/cmspro/region/list?keyword='+code+'&limit=1', function(listRes){
+            $.get(API_BASE + '/list?keyword='+code+'&limit=1', function(listRes){
                 if(listRes.code === 0 && listRes.data && listRes.data.length > 0){
                     var region = listRes.data[0];
                     $('#geoCode').text(region.code || '-');

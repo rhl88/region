@@ -3,6 +3,7 @@
 namespace App\Apps\CmsproRegion;
 
 use App\Apps\CmsproRegion\Services\MapSettingService;
+use App\Apps\CmsproRegion\Services\RegionLevelService;
 use App\Apps\CmsproRegion\Services\RegionService;
 use App\Services\HookManager;
 use Illuminate\Support\Facades\Route;
@@ -31,6 +32,9 @@ class ServiceProvider extends BaseServiceProvider
 
         // 地图配置服务：设置页读写 + 演示页取生效配置
         $this->app->singleton(MapSettingService::class);
+
+        // 区划级别配置服务：演示页选择器级别 + 已同步级别记录
+        $this->app->singleton(RegionLevelService::class);
     }
 
     public function boot(): void
@@ -53,6 +57,18 @@ class ServiceProvider extends BaseServiceProvider
             ->namespace('App\Apps\CmsproRegion\Controllers\Admin')
             ->middleware(['web', 'auth:admin'])
             ->group(base_path('app/Apps/CmsproRegion/Routes/admin_api.php'));
+
+        // 前台演示页路由（公开访问，无需登录）
+        Route::prefix('cmspro/region')
+            ->namespace('App\Apps\CmsproRegion\Controllers\Admin')
+            ->middleware(['web'])
+            ->group(base_path('app/Apps/CmsproRegion/Routes/demo.php'));
+
+        // 前台只读区划API（公开演示页使用，仅开放查询类接口）
+        Route::prefix('api/cmspro/region')
+            ->namespace('App\Apps\CmsproRegion\Controllers\Admin')
+            ->middleware(['web'])
+            ->group(base_path('app/Apps/CmsproRegion/Routes/demo_api.php'));
     }
 
     protected function loadViews(): void

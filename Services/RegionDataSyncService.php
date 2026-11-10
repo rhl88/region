@@ -24,12 +24,13 @@ use ZipArchive;
  *
  * 同步采用「全量替换」策略（与版本服务器发布契约配套）：
  * 下载 → SHA-256 校验 → 解包（防 Zip Slip）→ 契约校验 →
- * 单事务全删重插（分层 chunk 批量插入，parent_code → parent_id）→ 闭包表重建 →
- * 清缓存 → 记版本（ConfigItem）。
+ * staging 表分批落库（parent_code → parent_id）→ staging 内重建闭包表 →
+ * RENAME TABLE 原子切换 → 清缓存 → 记版本（ConfigItem）。
  *
  * 安全网：
- * - 契约校验在进事务前执行，非法数据直接拒绝，不动本地库
- * - 落库全程单事务包裹，任一步失败整体回滚，本地数据零影响
+ * - 契约校验在写库前执行，非法数据直接拒绝，不动本地库
+ * - 新数据写入 staging 表，切换前线上表始终可读可写；任一步失败仅清理临时表
+ * - MySQL 多表 RENAME 原子生效，读请求不会看到半量数据
  * - 版本服务器历史版本天然支持回退（download/{version}），无需本地留档
  */
 class RegionDataSyncService
@@ -63,14 +64,21 @@ class RegionDataSyncService
     /** 同步进度缓存键前缀（供前端轮询，长任务执行期间实时反馈各阶段） */
     private const PROGRESS_KEY_PREFIX = 'cmspro_region:sync_progress:';
 
-    /** 同步进度缓存存活秒数（覆盖最长同步耗时，过期自动清理） */
-    private const PROGRESS_TTL = 600;
+    /** 同步进度缓存存活秒数（需覆盖五级全量最长同步耗时约 15 分钟，过期自动清理） */
+    private const PROGRESS_TTL = 1800;
+
+    /** 主表与闭包表名（staging 表与 RENAME 原子切换需使用固定表名） */
+    private const REGION_TABLE = 'app_cmspro_region_region';
+
+    private const CLOSURE_TABLE = 'app_cmspro_region_closure';
 
     /** 当前同步的进度令牌（为空表示不上报进度，如服务层直接调用） */
     protected ?string $progressToken = null;
 
-    public function __construct(protected RegionService $regionService)
-    {
+    public function __construct(
+        protected RegionService $regionService,
+        protected RegionLevelService $regionLevels
+    ) {
     }
 
     /**
@@ -121,9 +129,30 @@ class RegionDataSyncService
     }
 
     /**
+     * 直接写入失败终态进度。
+     *
+     * 供控制器兜底：同步/导入在服务层之外抛错（如检查更新阶段网络异常）时，
+     * 前端轮询也能立即拿到 error 终态，不会一直停在 idle/running。
+     */
+    public function failProgress(string $token, string $message): void
+    {
+        $token = trim($token);
+        if ($token === '') {
+            return;
+        }
+
+        Cache::put(self::PROGRESS_KEY_PREFIX . $token, [
+            'state' => 'error',
+            'percent' => 100,
+            'stage' => '任务失败',
+            'message' => $message,
+        ], self::PROGRESS_TTL);
+    }
+
+    /**
      * 检查远端最新官方数据版本。
      *
-     * @return array{available:bool,message:string,version:string,region_count:int,stats:array<string,int>,changelog:string,file_size:int,checksum:string,release_time:string,local_version:string,local_count:int,need_update:bool}
+     * @return array{available:bool,message:string,version:string,region_count:int,stats:array<string,int>,changelog:string,file_size:int,checksum:string,release_time:string,local_version:string,local_count:int,local_level:int,need_update:bool}
      */
     public function checkUpdate(): array
     {
@@ -142,6 +171,8 @@ class RegionDataSyncService
             'release_time' => '',
             'local_version' => $localVersion,
             'local_count' => $localCount,
+            // 最近一次同步落库的最大级别（0 表示未知，如本功能上线前同步的站点）
+            'local_level' => $this->regionLevels->syncedLevel(),
             'need_update' => false,
         ];
 
@@ -189,12 +220,16 @@ class RegionDataSyncService
      * 在线同步官方区划数据（全量替换落库）。
      *
      * @param string|null $version 指定同步版本（支持历史版本回退），null 表示最新版本
+     * @param int $maxLevel 本次同步落库的最大级别（1-5），深于该级别的官方数据不落库；
+     *                      非法值回退为五级全量。全量替换语义下，未选级别的既有数据一并清除
      * @return array{synced:bool,message:string,version:string,count:int,stats:array<string,int>,duration:float}
      *
      * @throws RuntimeException 版本服务不可用、下载失败、校验失败、数据契约非法或落库失败时
      */
-    public function sync(?string $version = null): array
+    public function sync(?string $version = null, int $maxLevel = RegionLevelService::MAX_LEVEL): array
     {
+        $maxLevel = $this->regionLevels->isValidLevel($maxLevel) ? $maxLevel : RegionLevelService::MAX_LEVEL;
+
         $info = $this->checkUpdate();
         if (! $info['available']) {
             throw new RuntimeException($info['message'] !== '' ? $info['message'] : '版本服务不可用');
@@ -203,8 +238,11 @@ class RegionDataSyncService
         $requested = trim((string) $version);
         $version = $requested !== '' ? $requested : $info['version'];
 
-        // 未显式指定版本且本地已是最新：跳过下载（避免重复同步）
-        if ($requested === '' && $info['local_version'] === $version) {
+        // 未显式指定版本、本地已是最新且已同步级别不浅于本次请求级别：跳过下载（避免重复同步）
+        // 已同步级别更浅时不跳过，允许在同版本上补齐更深层级
+        if ($requested === '' && $info['local_version'] === $version && $info['local_level'] >= $maxLevel) {
+            $this->reportProgress('done', 100, '无需同步', '本地已是最新版本 ' . $version . '，无需同步');
+
             return [
                 'synced' => false,
                 'message' => '本地已是最新版本 ' . $version . '，无需同步',
@@ -251,7 +289,7 @@ class RegionDataSyncService
                 throw new RuntimeException('数据包校验失败，可能已损坏或被篡改');
             }
 
-            $this->reportProgress('running', 30, '正在解包并校验数据契约...');
+            $this->reportProgress('running', 30, '正在解包并校验数据契约（同步至' . $this->regionLevels->levelName($maxLevel) . '级）...');
 
             $package = $this->readPackageFromZip($zipPath);
             $jsonlFile = null;
@@ -259,13 +297,13 @@ class RegionDataSyncService
             try {
                 // 流式校验：逐条扫描写 JSONL 临时文件，不整体载入内存
                 // （村级数据 58 万条 / 67MB 全量解码会耗尽 512M memory_limit）
-                $validated = $this->validateRegionsFromFile($package['regions_file']);
+                $validated = $this->validateRegionsFromFile($package['regions_file'], $maxLevel);
                 $jsonlFile = $validated['jsonl_file'];
 
                 $this->reportProgress('running', 45, '数据校验通过，共 ' . $validated['count'] . ' 条，正在全量替换落库...');
 
                 $startTime = microtime(true);
-                $this->importRegions($jsonlFile, (int) ceil($validated['stats']['village'] / self::CHUNK_SIZE));
+                $this->importRegions($jsonlFile, (int) ceil($validated['stats']['village'] / self::CHUNK_SIZE), $maxLevel);
                 $duration = round(microtime(true) - $startTime, 2);
             } finally {
                 // regions.json 转存文件与校验产出的 JSONL 均为大体积临时文件（67MB 级），处理后立即清理
@@ -279,12 +317,14 @@ class RegionDataSyncService
 
             $this->regionService->clearCache();
             $this->saveVersion($version);
+            $this->regionLevels->saveSyncedLevel($maxLevel);
             $this->cleanOldPacks($packDir);
 
-            $this->reportProgress('done', 100, '同步完成', '版本 ' . $version . '，共 ' . $validated['count'] . ' 条，耗时 ' . $duration . ' 秒');
+            $this->reportProgress('done', 100, '同步完成', '版本 ' . $version . '，同步至' . $this->regionLevels->levelName($maxLevel) . '级，共 ' . $validated['count'] . ' 条，耗时 ' . $duration . ' 秒');
 
             Log::info('[cmspro.region] 官方区划数据同步完成', [
                 'version' => $version,
+                'max_level' => $maxLevel,
                 'count' => $validated['count'],
                 'duration' => $duration,
             ]);
@@ -360,6 +400,8 @@ class RegionDataSyncService
 
             $this->regionService->clearCache();
             $this->saveVersion($version);
+            // 快照包始终为五级全量导出（无级别裁剪），落库级别固定记为五级
+            $this->regionLevels->saveSyncedLevel(RegionLevelService::MAX_LEVEL);
 
             $this->reportProgress('done', 100, '导入完成', '版本 ' . $version . '，共 ' . $validated['count'] . ' 条，耗时 ' . $duration . ' 秒');
 
@@ -460,12 +502,19 @@ class RegionDataSyncService
      * 同时收集编码集合、上级引用集合与五级统计。常驻内存仅为两个编码集合
      * （58 万条约 45MB），远低于全量解码的 430MB。
      *
+     * 级别裁剪：level 深于 $maxLevel 的记录在规范化前直接跳过（不写 JSONL、不计入
+     * 编码集合与统计），因此既省去深层数据的内存与磁盘开销，引用闭环校验也自然
+     * 只对保留下来的记录生效。
+     *
+     * @param int $maxLevel 落库的最大级别（1-5），非法值按五级全量处理
      * @return array{count:int,stats:array<string,int>,jsonl_file:string}
      *
      * @throws RuntimeException 任一校验不通过或临时文件读写失败时
      */
-    protected function validateRegionsFromFile(string $regionsFile): array
+    protected function validateRegionsFromFile(string $regionsFile, int $maxLevel = RegionLevelService::MAX_LEVEL): array
     {
+        $maxLevel = $this->regionLevels->isValidLevel($maxLevel) ? $maxLevel : RegionLevelService::MAX_LEVEL;
+
         $packDir = storage_path(self::PACK_DIR);
         $this->ensureDir($packDir);
 
@@ -489,6 +538,11 @@ class RegionDataSyncService
 
         try {
             foreach ($this->streamRegionRows($regionsFile) as $index => $row) {
+                // 级别裁剪前置到规范化之前：跳过记录不进入编码集合，省下深层数据的常驻内存
+                if (is_array($row) && (int) ($row['level'] ?? 0) > $maxLevel) {
+                    continue;
+                }
+
                 $normalized = $this->normalizeRegionRow($row, $index, $codes);
 
                 $line = json_encode($normalized, JSON_UNESCAPED_UNICODE);
@@ -723,93 +777,256 @@ class RegionDataSyncService
     }
 
     /**
-     * 全量替换落库：单事务全删 → 按 level 分层多遍扫描 JSONL 批量插入
-     * （parent_code → parent_id）→ 闭包表重建。
+     * 全量替换落库：按 level 分层多遍扫描 JSONL 批量插入（parent_code → parent_id）
+     * → 闭包表重建。
      *
      * 分层导入对校验产出的 JSONL 按 level 1→5 各扫一遍：层序天然保证父级先于
-     * 子级落库，层内顺序无关，故不依赖 regions.json 的排序。任一步失败整体
-     * 回滚，本地数据零影响。
+     * 子级落库，层内顺序无关，故不依赖 regions.json 的排序。
+     *
+     * MySQL 走 staging 表 + RENAME 原子切换（见 importRegionsBySwap）：新数据在
+     * 独立表内写满并建好闭包后再原子切换，全程不删线上表、不产生大事务；其它
+     * 驱动（测试环境 SQLite）退回单事务全删重插。
      *
      * @param string $jsonlFile 校验产出的 JSONL 中间文件（每行一条规范化记录）
      * @param int $villageBatches 村级层批次数（由校验统计推算，0 表示不上报村级细分进度）
+     * @param int $maxLevel 本次落库的最大级别，仅扫描 1..maxLevel 层
      */
-    protected function importRegions(string $jsonlFile, int $villageBatches = 0): void
+    protected function importRegions(string $jsonlFile, int $villageBatches = 0, int $maxLevel = RegionLevelService::MAX_LEVEL): void
     {
-        DB::transaction(function () use ($jsonlFile, $villageBatches): void {
-            // 全删（MySQL 下 TRUNCATE 会隐式提交事务，必须用 DELETE）
-            DB::table('app_cmspro_region_closure')->delete();
-            DB::table('app_cmspro_region_region')->delete();
+        if (DB::connection()->getDriverName() !== 'mysql') {
+            DB::transaction(function () use ($jsonlFile, $villageBatches, $maxLevel): void {
+                DB::table(self::CLOSURE_TABLE)->delete();
+                DB::table(self::REGION_TABLE)->delete();
 
-            $now = date('Y-m-d H:i:s');
-            $codeMap = []; // code => id，逐层收集供下层 parent 解析
+                $this->importRegionRows(self::REGION_TABLE, $jsonlFile, $villageBatches, $maxLevel);
 
-            // 各层落库进度基准（45% 起，闭包重建前推进到 82%），村级层为数据大头占最大区间
-            $levelBasePercent = [1 => 48, 2 => 52, 3 => 56, 4 => 58, 5 => 60];
-            $levelNames = [1 => '省级', 2 => '市级', 3 => '区县级', 4 => '街道级', 5 => '村级'];
+                $this->reportProgress('running', 84, '正在重建层级关系（闭包表）...');
+                $this->regionService->rebuildClosureTable();
+            });
 
-            foreach ([1, 2, 3, 4, 5] as $level) {
-                $batch = [];
-                $batchIndex = 0;
+            return;
+        }
 
-                foreach ($this->iterateJsonlRows($jsonlFile) as $row) {
-                    if ((int) $row['level'] !== $level) {
-                        continue;
-                    }
+        $this->importRegionsBySwap($jsonlFile, $villageBatches, $maxLevel);
+    }
 
-                    $batch[] = [
-                        'code' => $row['code'],
-                        'name' => $row['name'],
-                        'level' => (int) $row['level'],
-                        'parent_id' => $row['parent_code'] === '0'
-                            ? 0
-                            : (int) ($codeMap[$row['parent_code']] ?? 0),
-                        'status' => (int) $row['status'],
-                        'lon' => $row['lon'],
-                        'lat' => $row['lat'],
-                        'create_time' => $now,
-                        'update_time' => $now,
-                    ];
+    /**
+     * staging 表落库 + RENAME 原子切换（仅 MySQL）。
+     *
+     * 1. 克隆主表/闭包表结构到 *_staging（含全部索引，isolated 写入）
+     * 2. 分批插入新数据（每批独立提交，无大事务 undo/binlog 压力）
+     * 3. 在 staging 表内重建闭包表（INSERT...SELECT 逐层展开）
+     * 4. 一条 RENAME TABLE 原子切换主表与闭包表，读请求瞬时切入新数据
+     * 5. 失败时仅清理 staging/old 表，线上数据零影响
+     */
+    protected function importRegionsBySwap(string $jsonlFile, int $villageBatches, int $maxLevel = RegionLevelService::MAX_LEVEL): void
+    {
+        $stagingRegion = self::REGION_TABLE . '_staging';
+        $stagingClosure = self::CLOSURE_TABLE . '_staging';
+        $oldRegion = self::REGION_TABLE . '_old';
+        $oldClosure = self::CLOSURE_TABLE . '_old';
 
-                    if (count($batch) >= self::CHUNK_SIZE) {
-                        $this->insertRegionBatch($batch, $level, $batchIndex, $villageBatches);
-                        $batch = [];
-                        $batchIndex++;
-                    }
+        // 预清理：上次中断可能残留 staging / old 表（残留会阻塞建表与 RENAME）
+        foreach ([$stagingRegion, $stagingClosure, $oldRegion, $oldClosure] as $table) {
+            $this->dropTableIfExists($table);
+        }
+
+        try {
+            DB::statement('CREATE TABLE `' . $stagingRegion . '` LIKE `' . self::REGION_TABLE . '`');
+            DB::statement('CREATE TABLE `' . $stagingClosure . '` LIKE `' . self::CLOSURE_TABLE . '`');
+            DB::statement('ALTER TABLE `' . $stagingRegion . '` AUTO_INCREMENT = 1');
+
+            // 批量写入前移除二级索引，写完一次性重建：整表建索引比逐行维护索引快一个数量级
+            // （唯一约束由契约校验保证，重建时若有重复会失败并清理临时表，线上数据不受影响）
+            $regionIndexes = $this->secondaryIndexDefinitions(self::REGION_TABLE);
+            $closureIndexes = $this->secondaryIndexDefinitions(self::CLOSURE_TABLE);
+
+            $this->dropIndexes($stagingRegion, $regionIndexes);
+            $this->importRegionRows($stagingRegion, $jsonlFile, $villageBatches, $maxLevel);
+            $this->addIndexes($stagingRegion, $regionIndexes);
+
+            // 闭包表构建期只保留 (depth, ancestor) 构建索引：闭包查询按 depth 过滤，
+            // 原索引均以 ancestor 打头，无法命中 depth 过滤
+            $this->dropIndexes($stagingClosure, $closureIndexes);
+            DB::statement('ALTER TABLE `' . $stagingClosure . '` ADD INDEX `idx_build_depth_ancestor` (`depth`, `ancestor`)');
+
+            $this->reportProgress('running', 84, '正在重建层级关系（闭包表）...');
+            $this->regionService->rebuildClosureTable($stagingRegion, $stagingClosure);
+
+            DB::statement('ALTER TABLE `' . $stagingClosure . '` DROP INDEX `idx_build_depth_ancestor`');
+            $this->addIndexes($stagingClosure, $closureIndexes);
+
+            // 四表一次 RENAME：MySQL 8 中对多表原子生效，外部读到的始终是完整旧表或完整新表
+            DB::statement(
+                'RENAME TABLE `' . self::REGION_TABLE . '` TO `' . $oldRegion . '`, '
+                . '`' . $stagingRegion . '` TO `' . self::REGION_TABLE . '`, '
+                . '`' . self::CLOSURE_TABLE . '` TO `' . $oldClosure . '`, '
+                . '`' . $stagingClosure . '` TO `' . self::CLOSURE_TABLE . '`'
+            );
+        } finally {
+            // 切换成功后清理旧表；未切换（异常）时清理 staging，线上表保持原样
+            foreach ([$stagingRegion, $stagingClosure, $oldRegion, $oldClosure] as $table) {
+                $this->dropTableIfExists($table);
+            }
+        }
+    }
+
+    /**
+     * 分层批量写入指定主表（staging 或线上表），并逐层收集 code => id 映射。
+     *
+     * @param string $table 目标主表名
+     * @param string $jsonlFile 校验产出的 JSONL 中间文件（每行一条规范化记录）
+     * @param int $villageBatches 村级层批次数（0 表示不上报村级细分进度）
+     * @param int $maxLevel 本次落库的最大级别，仅扫描 1..maxLevel 层
+     */
+    protected function importRegionRows(string $table, string $jsonlFile, int $villageBatches, int $maxLevel = RegionLevelService::MAX_LEVEL): void
+    {
+        $now = date('Y-m-d H:i:s');
+        $codeMap = []; // code => id，逐层收集供下层 parent 解析
+
+        // 各层落库进度基准（45% 起，闭包重建前推进到 82%），村级层为数据大头占最大区间
+        $levelBasePercent = [1 => 48, 2 => 52, 3 => 56, 4 => 58, 5 => 60];
+        $levelNames = [1 => '省级', 2 => '市级', 3 => '区县级', 4 => '街道级', 5 => '村级'];
+
+        foreach (range(1, $maxLevel) as $level) {
+            $batch = [];
+            $batchIndex = 0;
+
+            foreach ($this->iterateJsonlRows($jsonlFile) as $row) {
+                if ((int) $row['level'] !== $level) {
+                    continue;
                 }
 
-                if ($batch !== []) {
-                    $this->insertRegionBatch($batch, $level, $batchIndex, $villageBatches);
-                }
+                $batch[] = [
+                    'code' => $row['code'],
+                    'name' => $row['name'],
+                    'level' => (int) $row['level'],
+                    'parent_id' => $row['parent_code'] === '0'
+                        ? 0
+                        : (int) ($codeMap[$row['parent_code']] ?? 0),
+                    'status' => (int) $row['status'],
+                    'lon' => $row['lon'],
+                    'lat' => $row['lat'],
+                    'create_time' => $now,
+                    'update_time' => $now,
+                ];
 
-                // 收集本层 code => id（分层导入已保证父级先于子级，此映射必命中）
-                // 村级层达 54 万+，chunkById 流式收集避免一次性 pluck 全量驻留内存
-                DB::table('app_cmspro_region_region')
+                if (count($batch) >= self::CHUNK_SIZE) {
+                    $this->insertRegionBatch($table, $batch, $level, $batchIndex, $villageBatches);
+                    $batch = [];
+                    $batchIndex++;
+                }
+            }
+
+            if ($batch !== []) {
+                $this->insertRegionBatch($table, $batch, $level, $batchIndex, $villageBatches);
+            }
+
+            // 收集本层 code => id（分层导入已保证父级先于子级，此映射必命中）
+            // 末级无下级引用，无需收集，可省该层映射的内存与查询
+            if ($level < $maxLevel) {
+                DB::table($table)
                     ->where('level', $level)
                     ->chunkById(5000, function ($rows) use (&$codeMap): void {
                         foreach ($rows as $row) {
                             $codeMap[(string) $row->code] = (int) $row->id;
                         }
                     });
-
-                if ($level < 5) {
-                    $this->reportProgress('running', $levelBasePercent[$level], '已写入' . ($levelNames[$level] ?? '') . '数据，继续处理下级...');
-                }
             }
 
-            // 闭包表全量重建（事务内，失败随事务回滚）
-            $this->reportProgress('running', 84, '正在重建层级关系（闭包表）...');
-            $this->regionService->rebuildClosureTable();
-        });
+            if ($level < $maxLevel) {
+                $this->reportProgress('running', $levelBasePercent[$level], '已写入' . ($levelNames[$level] ?? '') . '数据，继续处理下级...');
+            }
+        }
+    }
+
+    /**
+     * 删除表（不存在时静默跳过）。
+     */
+    protected function dropTableIfExists(string $table): void
+    {
+        DB::statement('DROP TABLE IF EXISTS `' . $table . '`');
+    }
+
+    /**
+     * 读取指定表的二级索引定义（不含主键），用于批量写入前临时移除、写完一次性重建。
+     *
+     * @return array<int,array{name:string,unique:bool,columns:string[]}>
+     */
+    protected function secondaryIndexDefinitions(string $table): array
+    {
+        $rows = DB::select(
+            'SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME FROM information_schema.STATISTICS '
+            . 'WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME <> ? '
+            . 'ORDER BY INDEX_NAME, SEQ_IN_INDEX',
+            [$table, 'PRIMARY']
+        );
+
+        $definitions = [];
+        foreach ($rows as $row) {
+            $name = (string) $row->INDEX_NAME;
+            $definitions[$name] ??= [
+                'name' => $name,
+                'unique' => (int) $row->NON_UNIQUE === 0,
+                'columns' => [],
+            ];
+            $definitions[$name]['columns'][] = (string) $row->COLUMN_NAME;
+        }
+
+        return array_values($definitions);
+    }
+
+    /**
+     * 移除表上的二级索引（一条 ALTER 完成，避免多次表扫描）。
+     *
+     * @param array<int,array{name:string,unique:bool,columns:string[]}> $definitions
+     */
+    protected function dropIndexes(string $table, array $definitions): void
+    {
+        if ($definitions === []) {
+            return;
+        }
+
+        $clauses = array_map(
+            fn (array $definition): string => 'DROP INDEX `' . $definition['name'] . '`',
+            $definitions
+        );
+
+        DB::statement('ALTER TABLE `' . $table . '` ' . implode(', ', $clauses));
+    }
+
+    /**
+     * 一次性重建二级索引（MySQL 单次表扫描排序建完所有索引）。
+     *
+     * @param array<int,array{name:string,unique:bool,columns:string[]}> $definitions
+     */
+    protected function addIndexes(string $table, array $definitions): void
+    {
+        if ($definitions === []) {
+            return;
+        }
+
+        $clauses = array_map(function (array $definition): string {
+            $columns = implode(', ', array_map(
+                fn (string $column): string => '`' . $column . '`',
+                $definition['columns']
+            ));
+
+            return 'ADD ' . ($definition['unique'] ? 'UNIQUE ' : '') . 'INDEX `' . $definition['name'] . '` (' . $columns . ')';
+        }, $definitions);
+
+        DB::statement('ALTER TABLE `' . $table . '` ' . implode(', ', $clauses));
     }
 
     /**
      * 单批插入区划记录；村级层按批进度细分上报。
      *
+     * @param string $table 目标主表名
      * @param array<int,array<string,mixed>> $batch 本批落库记录
      */
-    protected function insertRegionBatch(array $batch, int $level, int $batchIndex, int $villageBatchTotal): void
+    protected function insertRegionBatch(string $table, array $batch, int $level, int $batchIndex, int $villageBatchTotal): void
     {
-        DB::table('app_cmspro_region_region')->insert($batch);
+        DB::table($table)->insert($batch);
 
         // 村级层数据量最大（数十万条），按 chunk 进度细分上报（60% → 82%）
         if ($level === 5 && $villageBatchTotal > 0) {

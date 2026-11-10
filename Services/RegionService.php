@@ -1408,26 +1408,31 @@ class RegionService
      * - 再按深度逐层展开：第 d 层由第 d-1 层闭包沿 parent_id 上溯一级生成，
      *   每层一条 INSERT...SELECT 全程在库内完成，PHP 侧零数据搬运
      * - 最大闭包深度 = 最大层级 - 1（五级树为 4），省直辖等短链树天然少插
+     *
+     * @param string $regionTable 主表名（同步落库时传入 staging 表名）
+     * @param string $closureTable 闭包表名（同步落库时传入 staging 表名）
      */
-    public function rebuildClosureTable(): void
-    {
+    public function rebuildClosureTable(
+        string $regionTable = 'app_cmspro_region_region',
+        string $closureTable = 'app_cmspro_region_closure'
+    ): void {
         // 清空闭包表
-        DB::table('app_cmspro_region_closure')->delete();
+        DB::table($closureTable)->delete();
 
         // 第 0 层：所有节点的自身闭包
         DB::affectingStatement(
-            'INSERT INTO `app_cmspro_region_closure` (`ancestor`, `descendant`, `depth`) '
-            . 'SELECT `id`, `id`, 0 FROM `app_cmspro_region_region`'
+            'INSERT INTO `' . $closureTable . '` (`ancestor`, `descendant`, `depth`) '
+            . 'SELECT `id`, `id`, 0 FROM `' . $regionTable . '`'
         );
 
         // 逐层展开祖先链：第 depth 层 = 第 depth-1 层闭包的祖先再上溯一级父节点
-        $maxDepth = max(0, (int) DB::table('app_cmspro_region_region')->max('level') - 1);
+        $maxDepth = max(0, (int) DB::table($regionTable)->max('level') - 1);
         for ($depth = 1; $depth <= $maxDepth; $depth++) {
             $inserted = DB::affectingStatement(
-                'INSERT INTO `app_cmspro_region_closure` (`ancestor`, `descendant`, `depth`) '
+                'INSERT INTO `' . $closureTable . '` (`ancestor`, `descendant`, `depth`) '
                 . 'SELECT `r`.`parent_id`, `c`.`descendant`, `c`.`depth` + 1 '
-                . 'FROM `app_cmspro_region_closure` `c` '
-                . 'JOIN `app_cmspro_region_region` `r` ON `r`.`id` = `c`.`ancestor` '
+                . 'FROM `' . $closureTable . '` `c` '
+                . 'JOIN `' . $regionTable . '` `r` ON `r`.`id` = `c`.`ancestor` '
                 . 'WHERE `c`.`depth` = ? AND `r`.`parent_id` > 0',
                 [$depth - 1]
             );

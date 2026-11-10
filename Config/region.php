@@ -10,6 +10,9 @@ return [
     // 默认最大层级
     'default_max_level' => 3,
 
+    // 数据演示页「区划选择器」显示的最大级别（数据库 config_items 无记录时回退到此处）
+    'region_max_level' => 5,
+
     // ========== 地图配置默认值（数据库 config_items 无记录时回退到此处） ==========
 
     // 配置来源：none=不启用厂商地图（演示页用 Leaflet + 高德瓦片）、own=本应用独立配置、maps=跟随「地图」应用

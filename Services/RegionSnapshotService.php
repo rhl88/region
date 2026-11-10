@@ -3,6 +3,7 @@
 namespace App\Apps\CmsproRegion\Services;
 
 use App\Apps\CmsproRegion\Models\Region;
+use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use ZipArchive;
 
@@ -28,9 +29,6 @@ class RegionSnapshotService
     /** 单次导出最大记录数（与版本服务器 70 万上限一致，五级全量约 64 万条） */
     private const MAX_REGIONS = 700000;
 
-    /** 流式读取分块大小 */
-    private const CHUNK_SIZE = 1000;
-
     /** 版本号格式：字母/数字/点/下划线/连字符，最长 32 位 */
     private const VERSION_PATTERN = '/^[A-Za-z0-9._-]{1,32}$/';
 
@@ -52,9 +50,8 @@ class RegionSnapshotService
             throw new RuntimeException('库中暂无省级（level=1）区划数据，请先完成数据导入再导出快照包');
         }
 
-        // id => code 映射，用于 parent_id → parent_code 转换
-        $codeMap = Region::query()->pluck('code', 'id')->all();
-
+        // id => code 映射已取消：64 万条映射常驻内存（实测约 370MB）且父级 code
+        // 可在流式查询中左连父表一次取回，导出峰值内存降至百 MB 以内
         $token = uniqid();
         $regionsFile = storage_path('app/cmspro-region-snapshot-' . $token . '-regions.json');
         $metaFile = storage_path('app/cmspro-region-snapshot-' . $token . '-meta.json');
@@ -64,7 +61,7 @@ class RegionSnapshotService
         $success = false;
 
         try {
-            $count = $this->writeRegionsJson($regionsFile, $codeMap);
+            $count = $this->writeRegionsJson($regionsFile);
             $stats = $this->collectStats();
 
             $this->writeMetaJson($metaFile, $version, $count, $stats);
@@ -92,11 +89,16 @@ class RegionSnapshotService
     }
 
     /**
-     * 流式写出 regions.json：全量记录按 level + code 排序，父级先于子级。
+     * 流式写出 regions.json：按 level 1→5 分遍，层内按 code 排序整层游标读取。
+     *
+     * 63.8 万条数据量下原 `orderBy(level)->orderBy(code)->chunk()` 为 offset 翻页且
+     * 每页全表 filesort（实测前 2 万条耗时 457 秒）。改为每层一条流式查询：命中
+     * (level, code) 复合索引直接按编码序输出，无 offset、无 filesort、无分页往返；
+     * 父级 code 由左连父表一次取回，不再构建 64 万条 id → code 映射（省约 370MB 内存）。
      *
      * @return int 导出记录总数
      */
-    protected function writeRegionsJson(string $regionsFile, array $codeMap): int
+    protected function writeRegionsJson(string $regionsFile): int
     {
         $levelKeys = [
             Region::LEVEL_PROVINCE => 'province',
@@ -116,46 +118,58 @@ class RegionSnapshotService
         try {
             fwrite($handle, '[');
 
-            Region::query()
-                ->orderBy('level')
-                ->orderBy('code')
-                ->chunk(self::CHUNK_SIZE, function ($regions) use ($handle, $codeMap, $levelKeys, &$count): bool {
-                    foreach ($regions as $region) {
-                        // 数据完整性防御：level 必须为 1-5
-                        if (! isset($levelKeys[$region->level])) {
-                            throw new RuntimeException('区划 ' . $region->code . ' 的 level 非法：' . $region->level . '，请先修复数据');
-                        }
+            foreach (array_keys($levelKeys) as $level) {
+                $rows = DB::table('app_cmspro_region_region as r')
+                    ->leftJoin('app_cmspro_region_region as p', 'p.id', '=', 'r.parent_id')
+                    ->select(
+                        'r.id',
+                        'r.code',
+                        'r.name',
+                        'r.level',
+                        'r.parent_id',
+                        'r.status',
+                        'r.lon',
+                        'r.lat',
+                        'p.code as parent_code'
+                    )
+                    ->where('r.level', $level)
+                    ->orderBy('r.code')
+                    ->cursor();
 
-                        // parent_id → parent_code：顶级为 '0'，子级为父记录 code
-                        $parentId = (int) $region->parent_id;
-                        if ($parentId === 0) {
-                            $parentCode = '0';
-                        } elseif (isset($codeMap[$parentId])) {
-                            $parentCode = (string) $codeMap[$parentId];
-                        } else {
-                            throw new RuntimeException('区划 ' . $region->code . ' 引用了不存在的上级记录（parent_id=' . $region->parent_id . '），请先修复数据');
-                        }
-
-                        $row = [
-                            'code' => (string) $region->code,
-                            'name' => (string) $region->name,
-                            'level' => (int) $region->level,
-                            'parent_code' => $parentCode,
-                            'status' => (int) $region->status === 0 ? 0 : 1,
-                            'lon' => $region->lon,
-                            'lat' => $region->lat,
-                        ];
-
-                        fwrite($handle, ($count > 0 ? ',' : '') . json_encode($row, JSON_UNESCAPED_UNICODE));
-                        $count++;
-
-                        if ($count > self::MAX_REGIONS) {
-                            throw new RuntimeException('导出记录数超过上限 ' . self::MAX_REGIONS);
-                        }
+                foreach ($rows as $region) {
+                    // 数据完整性防御：level 必须为 1-5
+                    if (! isset($levelKeys[(int) $region->level])) {
+                        throw new RuntimeException('区划 ' . $region->code . ' 的 level 非法：' . $region->level . '，请先修复数据');
                     }
 
-                    return true;
-                });
+                    // parent_id → parent_code：顶级为 '0'，子级为父记录 code
+                    $parentId = (int) $region->parent_id;
+                    if ($parentId === 0) {
+                        $parentCode = '0';
+                    } elseif ($region->parent_code !== null) {
+                        $parentCode = (string) $region->parent_code;
+                    } else {
+                        throw new RuntimeException('区划 ' . $region->code . ' 引用了不存在的上级记录（parent_id=' . $region->parent_id . '），请先修复数据');
+                    }
+
+                    $row = [
+                        'code' => (string) $region->code,
+                        'name' => (string) $region->name,
+                        'level' => (int) $region->level,
+                        'parent_code' => $parentCode,
+                        'status' => (int) $region->status === 0 ? 0 : 1,
+                        'lon' => $region->lon === null ? null : (float) $region->lon,
+                        'lat' => $region->lat === null ? null : (float) $region->lat,
+                    ];
+
+                    fwrite($handle, ($count > 0 ? ',' : '') . json_encode($row, JSON_UNESCAPED_UNICODE));
+                    $count++;
+
+                    if ($count > self::MAX_REGIONS) {
+                        throw new RuntimeException('导出记录数超过上限 ' . self::MAX_REGIONS);
+                    }
+                }
+            }
 
             fwrite($handle, ']');
         } finally {
@@ -177,7 +191,7 @@ class RegionSnapshotService
     protected function collectStats(): array
     {
         $stats = Region::query()
-            ->select('level', \DB::raw('count(*) as count'))
+            ->select('level', DB::raw('count(*) as count'))
             ->groupBy('level')
             ->pluck('count', 'level')
             ->all();

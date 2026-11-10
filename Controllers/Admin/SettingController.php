@@ -3,20 +3,23 @@
 namespace App\Apps\CmsproRegion\Controllers\Admin;
 
 use App\Apps\CmsproRegion\Services\MapSettingService;
+use App\Apps\CmsproRegion\Services\RegionLevelService;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 /**
- * 后台 · 应用设置（地图配置）
+ * 后台 · 应用设置（区划级别 + 地图配置）
  *
  * 密钥由使用者自行到各开放平台申请后填入，落库使用 Crypt 加密；
  * 设置页明文回显已配置值，清空文本框并保存即删除该密钥。
  */
 class SettingController extends Controller
 {
-    public function __construct(protected MapSettingService $mapSettings)
-    {
+    public function __construct(
+        protected MapSettingService $mapSettings,
+        protected RegionLevelService $regionLevels
+    ) {
     }
 
     /**
@@ -39,6 +42,8 @@ class SettingController extends Controller
             }
         }
 
+        $regionMaxLevel = $this->regionLevels->maxLevel();
+
         return view('cmsproregion::Admin.setting', [
             'values'     => $values,
             'hasKeys'    => $hasKeys,
@@ -46,6 +51,10 @@ class SettingController extends Controller
             'groupReady' => $this->mapSettings->configGroupReady(),
             'mapsStatus' => $this->mapSettings->mapsAppStatus(),
             'effective'  => $this->mapSettings->resolveEffective(),
+            // 区划级别设置：控制数据演示页「区划选择器」的显示深度
+            'regionMaxLevel' => $regionMaxLevel,
+            'levelOptions'   => RegionLevelService::LEVEL_NAMES,
+            'levelLabel'     => $this->regionLevels->levelLabel($regionMaxLevel),
         ]);
     }
 
@@ -84,6 +93,7 @@ class SettingController extends Controller
 
         try {
             $this->mapSettings->set($data);
+            $this->saveRegionLevel($request);
         } catch (\RuntimeException $e) {
             return response()->json([
                 'code'    => 1,
@@ -95,8 +105,24 @@ class SettingController extends Controller
         return response()->json([
             'code'    => 0,
             'message' => '保存成功',
-            'data'    => $this->mapSettings->resolveEffective(),
+            'data'    => array_merge($this->mapSettings->resolveEffective(), [
+                'region_max_level' => $this->regionLevels->maxLevel(),
+            ]),
         ]);
+    }
+
+    /**
+     * 保存区划显示级别（未提交该字段时跳过，兼容仅保存地图配置的调用）
+     *
+     * @throws \RuntimeException 级别非法或配置写入失败
+     */
+    private function saveRegionLevel(Request $request): void
+    {
+        if (! $request->has('region_max_level')) {
+            return;
+        }
+
+        $this->regionLevels->setMaxLevel((int) $request->input('region_max_level'));
     }
 
     /**

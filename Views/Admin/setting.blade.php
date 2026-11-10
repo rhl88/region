@@ -63,6 +63,29 @@
     </div>
 
     <form class="layui-form setting-card" lay-filter="settingForm">
+        {{-- 区划级别设置：控制数据演示页「区划选择器」渲染的层级深度 --}}
+        <div class="layui-card">
+            <div class="layui-card-header">区划级别设置</div>
+            <div class="layui-card-body">
+                <div class="layui-form-item">
+                    <label class="layui-form-label" for="region_max_level">选择器显示级别</label>
+                    <div class="layui-input-block">
+                        <select name="region_max_level" id="region_max_level">
+                            @foreach($levelOptions as $level => $levelName)
+                            <option value="{{ $level }}" @selected($regionMaxLevel === $level)>{{ $level }} 级（至{{ $levelName }}）</option>
+                            @endforeach
+                        </select>
+                        <div class="config-tips">
+                            当前生效：<b>{{ $levelLabel }}</b>。仅决定数据演示页「区划选择器」渲染到第几级下拉，
+                            不改变对外 API（children / tree / list）的返回结果，也不删除库中已有数据。
+                            级别低于 3（区县）时演示页只渲染省 / 市两级下拉，并提示当前设置仅显示至该级别。
+                            「在线同步官方数据」按所选同步级别落库后会联动更新本设置，使选择器与实际数据深度一致。
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="layui-card">
             <div class="layui-card-header">配置来源</div>
             <div class="layui-card-body">
