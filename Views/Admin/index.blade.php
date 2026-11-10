@@ -72,6 +72,18 @@
         .batch-bar-inner{height:100%;width:0;background:#1e9fff;transition:width .2s;}
         .batch-stats{margin-top:8px;font-size:12px;color:#666;line-height:1.8;}
         .batch-log{max-height:150px;overflow-y:auto;margin-top:8px;padding:8px;background:#fafafa;border-radius:4px;font-size:12px;line-height:1.8;color:#666;}
+        /* 手动选择坐标弹层 */
+        .coord-pick{padding:14px 16px;}
+        .coord-pick-bar{display:flex;gap:8px;margin-bottom:10px;}
+        .coord-pick-input{flex:1;height:34px;padding:0 10px;border:1px solid #e6e6e6;border-radius:4px;font-size:13px;color:#333;outline:none;}
+        .coord-pick-input:focus{border-color:#1e9fff;}
+        /* 地图容器必须固定高度，否则 JSAPI 初始化时取到 0 尺寸而白屏 */
+        .coord-pick-map{width:100%;height:420px;border:1px solid #e6e6e6;border-radius:4px;}
+        .coord-pick-info{margin-top:10px;font-size:13px;color:#333;line-height:1.9;}
+        .coord-pick-val{font-family:'Courier New',monospace;color:#1e9fff;}
+        .coord-pick-tip{margin-left:6px;font-size:12px;color:#999;}
+        .coord-pick-footer{margin-top:12px;text-align:right;}
+        .coord-pick-footer .layui-btn{margin-left:8px;}
         .coord-footer{margin-top:16px;text-align:right;}
         /* 区划详情弹层（双击列表行触发） */
         .region-detail{padding:16px 20px;font-size:13px;color:#333;max-height:66vh;overflow-y:auto;}
@@ -672,6 +684,174 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         }, coordPath.length ? coordPath[0].name : '');
     }
 
+    // ==================== 手动选择坐标 ====================
+    // 地址自动解析常只落到行政区中心点，偏差较大时用地图人工点选纠正；
+    // 百度地图点选得到的即 BD-09 坐标，与「获取坐标并更新」共用同一写库接口
+    var coordPickMap = null;
+    var coordPickMarker = null;
+    var coordPickPoint = null;
+
+    // 手动选点弹层内容
+    function coordPickerHtml(target){
+        var names = $.map(coordPath, function(item){ return item.name; });
+        return ''
+            + '<div class="coord-pick">'
+            + '  <div class="coord-pick-bar">'
+            + '    <input type="text" class="coord-pick-input" id="coordPickKeyword"'
+            + '      placeholder="输入地址关键字重新定位，如：' + target.name + '人民政府">'
+            + '    <button class="layui-btn layui-btn-sm" id="coordPickSearchBtn">'
+            + '      <i class="fa fa-search"></i> 定位</button>'
+            + '  </div>'
+            + '  <div class="coord-pick-map" id="coordPickMap"></div>'
+            + '  <div class="coord-pick-info">'
+            + '    <div>目标区划：' + names.join(' &gt; ')
+            + '（' + (levelNames[target.level] || '') + '）</div>'
+            + '    <div>选中坐标（BD-09）：<span class="coord-pick-val" id="coordPickValue">-</span>'
+            + '      <span class="coord-pick-tip">点击地图或拖动标记调整，保存时自动转换为 GCJ-02</span></div>'
+            + '  </div>'
+            + '  <div class="coord-pick-footer">'
+            + '    <button class="layui-btn layui-btn-primary layui-btn-sm" id="coordPickCancelBtn">取消</button>'
+            + '    <button class="layui-btn layui-btn-sm" id="coordPickSaveBtn">'
+            + '      <i class="fa fa-check"></i> 保存该坐标</button>'
+            + '  </div>'
+            + '</div>';
+    }
+
+    // 更新选点：首次创建可拖拽标记，之后只移动位置并回显坐标
+    // BMapGL 事件回调取 latlng，旧版 BMap 取 point，两者都兼容
+    function setCoordPickPoint(point){
+        if(!point || !coordPickMap){
+            return;
+        }
+        var ns = window.BMapGL || window.BMap;
+        coordPickPoint = point;
+        if(!coordPickMarker){
+            coordPickMarker = new ns.Marker(point);
+            coordPickMarker.enableDragging();
+            coordPickMap.addOverlay(coordPickMarker);
+            coordPickMarker.addEventListener('dragend', function(e){
+                setCoordPickPoint(e.latlng || e.point);
+            });
+        }else{
+            coordPickMarker.setPosition(point);
+        }
+        $('#coordPickValue').text(
+            Number(point.lng).toFixed(6) + ', ' + Number(point.lat).toFixed(6)
+        );
+    }
+
+    // 按地址关键字定位地图，城市范围取已选省份，与自动解析保持一致
+    function locateCoordPick(keyword){
+        var geocoder = getBaiduGeocoder();
+        if(!geocoder){
+            layer.msg('百度地图 JSAPI 未就绪，无法按地址定位，请直接在地图上点选', {icon: 0});
+            return;
+        }
+        geocoder.getPoint(keyword, function(point){
+            if(!point){
+                layer.msg('未解析到坐标：' + keyword, {icon: 0});
+                return;
+            }
+            coordPickMap.centerAndZoom(point, 15);
+            setCoordPickPoint(point);
+        }, coordPath.length ? coordPath[0].name : '');
+    }
+
+    // 初始化地图实例与选点、搜索、保存等交互
+    function initCoordPickMap(target, pickIndex){
+        var ns = window.BMapGL || window.BMap;
+        coordPickMap = new ns.Map('coordPickMap');
+        coordPickMap.centerAndZoom(new ns.Point(116.404, 39.915), 5);
+        coordPickMap.enableScrollWheelZoom(true);
+        coordPickMap.addEventListener('click', function(e){
+            setCoordPickPoint(e.latlng || e.point);
+        });
+        // 打开即按当前所选区划地址定位，解析失败时保留全国视野由用户搜索
+        locateCoordPick(buildCoordAddress(coordPath));
+
+        $('#coordPickSearchBtn').on('click', function(){
+            var keyword = $.trim($('#coordPickKeyword').val());
+            if(!keyword){
+                layer.msg('请输入地址关键字', {icon: 0});
+                return;
+            }
+            locateCoordPick(keyword);
+        });
+        $('#coordPickKeyword').on('keydown', function(e){
+            if(e.keyCode === 13){
+                $('#coordPickSearchBtn').trigger('click');
+            }
+        });
+        $('#coordPickCancelBtn').on('click', function(){
+            layer.close(pickIndex);
+        });
+        $('#coordPickSaveBtn').on('click', function(){
+            saveCoordPick(target, pickIndex);
+        });
+    }
+
+    // 保存手动选点结果：提交 BD-09，由服务端转换为 GCJ-02 写库
+    function saveCoordPick(target, pickIndex){
+        if(!coordPickPoint){
+            layer.msg('请先在地图上点击选择坐标位置', {icon: 0});
+            return;
+        }
+        var $btn = $('#coordPickSaveBtn').addClass('layui-btn-disabled').prop('disabled', true);
+        var picked = coordPickPoint;
+        $.post('/api/admin/cmspro/region/update-coordinate', {
+            code: target.code,
+            lng: picked.lng,
+            lat: picked.lat
+        }, function(res){
+            $btn.removeClass('layui-btn-disabled').prop('disabled', false);
+            if(res.code !== 0 || !res.data){
+                layer.msg('更新失败：' + (res.message || '未知错误'), {icon: 2});
+                return;
+            }
+            var data = res.data;
+            layer.close(pickIndex);
+            $('#coordResult').removeClass('coord-ok coord-fail').addClass('coord-ok').html(
+                '手动选点坐标（BD-09）：' + Number(picked.lng).toFixed(6) + ', '
+                + Number(picked.lat).toFixed(6)
+                + '<br>已存储坐标（GCJ-02）：' + Number(data.lon).toFixed(6) + ', '
+                + Number(data.lat).toFixed(6)
+                + '<br>' + (data.name || target.name) + ' 坐标更新成功'
+            );
+            table.reload('regionTable');
+            refreshStats();
+            loadCoordCoordinate(target.code);
+        }).fail(function(){
+            $btn.removeClass('layui-btn-disabled').prop('disabled', false);
+            layer.msg('更新请求失败，请检查登录状态或网络', {icon: 2});
+        });
+    }
+
+    // 打开手动选点弹层
+    function openCoordPicker(){
+        var target = coordPath.length ? coordPath[coordPath.length - 1] : null;
+        if(!target){
+            layer.msg('请先选择要更新的区划', {icon: 0});
+            return;
+        }
+        if(!window.BMapGL && !window.BMap){
+            layer.msg('百度地图 JSAPI 未就绪，请检查「应用设置」中的百度 JS AK 与域名白名单', {icon: 2});
+            return;
+        }
+        layer.open({
+            type: 1,
+            title: '手动选择坐标',
+            area: ['760px', 'auto'],
+            shadeClose: false,
+            content: coordPickerHtml(target),
+            success: function(layero, pickIndex){
+                coordPickMap = null;
+                coordPickMarker = null;
+                coordPickPoint = null;
+                initCoordPickMap(target, pickIndex);
+            }
+        });
+    }
+
     // ==================== 批量自动更新 ====================
     var BATCH_STORE_KEY = 'cmsproregion_coord_batch_job';
     var BATCH_CONCURRENCY = 3;
@@ -1120,6 +1300,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
             + '    </div>'
             + '    <div style="margin-top:14px;">'
             + '      <button class="layui-btn" id="coordUpdateBtn"><i class="fa fa-map-marker"></i> 获取坐标并更新</button>'
+            + '      <button class="layui-btn layui-btn-primary" id="coordPickBtn" title="在地图上人工点选坐标位置"><i class="fa fa-crosshairs"></i> 手动选择</button>'
             + '    </div>'
             + '  </div>'
             + '  <div class="coord-pane" id="coordPaneBatch">'
@@ -1193,6 +1374,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
                     });
                 });
                 $('#coordUpdateBtn').on('click', doCoordUpdate);
+                $('#coordPickBtn').on('click', openCoordPicker);
 
                 // 批量自动更新
                 initBatchPanel();
