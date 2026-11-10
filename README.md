@@ -1,6 +1,6 @@
 # 中国行政区划 应用文档
 
-> 应用ID：`cmspro.region` | 文档版本：1.3.1 | 应用版本：1.7.0 | 依赖：PHP ≥ 8.3, CmsPro ≥ 5.0.0
+> 应用ID：`cmspro.region` | 文档版本：1.3.2 | 应用版本：1.7.1 | 依赖：PHP ≥ 8.3, CmsPro ≥ 5.0.0
 
 - 官方地址：https://www.cmspro.cn/apps/cmspro.region
 - 本应用提供中国五级行政区划数据的管理、同步、查询与可视化演示能力，基于 CMSPRO 运行，请先安装 [CMSPRO](https://www.cmspro.cn/help/2)
