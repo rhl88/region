@@ -47,11 +47,12 @@ class RegionController extends Controller
     {
         $stats = $this->regionService->getStats();
 
-        // 开发模式（APP_DEV_MODE=true）下才提供「更新坐标」入口，AK 优先取本应用生效配置
+        // 「更新坐标」入口不再依赖开发模式；AK 优先取本应用生效配置
+        // devMode 仍用于控制「旧版数据更新」面板的显示
         $devMode = (bool) config('app.dev_mode');
-        $baiduAk = $devMode ? $this->devBaiduAk() : '';
+        $baiduAk = $this->baiduJsAk();
         // AK 缺失时给出具体原因，前端点击「更新坐标」时引导到「应用设置」页
-        $coordMapTip = ($devMode && $baiduAk === '') ? $this->coordMapTip() : '';
+        $coordMapTip = $baiduAk === '' ? $this->coordMapTip() : '';
 
         return view('cmsproregion::Admin.index', compact('stats', 'devMode', 'baiduAk', 'coordMapTip'));
     }
@@ -108,12 +109,12 @@ class RegionController extends Controller
     }
 
     /**
-     * 开发模式「更新坐标」所需的百度 JSAPI AK
+     * 「更新坐标」所需的百度 JSAPI AK
      *
      * 优先使用本应用生效配置（独立配置或关联地图应用且厂商为百度），
      * 其次回退到「地图」应用的浏览器端 AK，保持既有行为不变。
      */
-    private function devBaiduAk(): string
+    private function baiduJsAk(): string
     {
         $effective = $this->mapSettingService->resolveEffective();
         if ($effective['configured'] && $effective['provider'] === 'baidu') {
@@ -215,18 +216,10 @@ class RegionController extends Controller
     }
 
     /**
-     * 按百度地图解析结果更新单个区划坐标（仅开发模式可用）
+     * 按百度地图解析结果更新单个区划坐标
      */
     public function updateCoordinate(Request $request): JsonResponse
     {
-        if (! config('app.dev_mode')) {
-            return response()->json([
-                'code' => 1,
-                'message' => '该功能仅限开发模式（APP_DEV_MODE=true）使用',
-                'data' => null,
-            ]);
-        }
-
         $code = trim((string) $request->input('code', ''));
         $lng = $request->input('lng');
         $lat = $request->input('lat');
@@ -249,18 +242,10 @@ class RegionController extends Controller
     }
 
     /**
-     * 获取单个区划当前库中的经纬度（仅开发模式可用）
+     * 获取单个区划当前库中的经纬度
      */
     public function coordinate(Request $request): JsonResponse
     {
-        if (! config('app.dev_mode')) {
-            return response()->json([
-                'code' => 1,
-                'message' => '该功能仅限开发模式（APP_DEV_MODE=true）使用',
-                'data' => null,
-            ]);
-        }
-
         $code = trim((string) $request->input('code', ''));
         if ($code === '') {
             return response()->json([
@@ -287,18 +272,10 @@ class RegionController extends Controller
     }
 
     /**
-     * 获取批量更新坐标的候选区划（仅开发模式可用）
+     * 获取批量更新坐标的候选区划
      */
     public function coordinateCandidates(Request $request): JsonResponse
     {
-        if (! config('app.dev_mode')) {
-            return response()->json([
-                'code' => 1,
-                'message' => '该功能仅限开发模式（APP_DEV_MODE=true）使用',
-                'data' => null,
-            ]);
-        }
-
         $levels = array_filter(array_map('intval', explode(',', (string) $request->input('levels', '1,2,3,4'))));
         $onlyMissing = (bool) $request->input('only_missing', 1);
         $afterCode = trim((string) $request->input('after_code', ''));
@@ -315,18 +292,10 @@ class RegionController extends Controller
     }
 
     /**
-     * 批量写入区划坐标（仅开发模式可用）
+     * 批量写入区划坐标
      */
     public function updateCoordinateBatch(Request $request): JsonResponse
     {
-        if (! config('app.dev_mode')) {
-            return response()->json([
-                'code' => 1,
-                'message' => '该功能仅限开发模式（APP_DEV_MODE=true）使用',
-                'data' => null,
-            ]);
-        }
-
         $items = $request->input('items', []);
         if (! is_array($items) || empty($items)) {
             return response()->json([

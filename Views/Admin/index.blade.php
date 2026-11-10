@@ -43,7 +43,7 @@
         .legacy-menu .one-key-menu{top:-6px;right:100%;left:auto;margin-right:-8px;padding-right:8px;padding-top:5px;padding-bottom:5px;}
         /* 「在线同步官方数据」右上角推荐徽标 */
         .recommend-badge{position:absolute;top:-8px;right:-6px;z-index:2;padding:1px 6px;font-size:11px;line-height:16px;color:#fff;background:#ff5722;border-radius:8px;font-style:normal;white-space:nowrap;}
-        /* 更新坐标弹窗（开发模式） */
+        /* 更新坐标弹窗 */
         .coord-dialog{padding:18px 20px;font-size:13px;color:#333;max-height:68vh;overflow-y:auto;}
         .coord-tabs{display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid #eee;}
         .coord-tab{padding:8px 16px;font-size:13px;color:#666;cursor:pointer;border-bottom:2px solid transparent;}
@@ -140,8 +140,8 @@
                     <input type="text" id="keywordInput" placeholder="搜索名称或代码" class="layui-input" style="width:200px;">
                 </div>
                 <button class="layui-btn" id="searchBtn"><i class="fa fa-search"></i> 搜索</button>
+                <button class="layui-btn layui-btn-warm" id="updateCoordBtn" title="按百度地图地址解析结果更新单个区划坐标"><i class="fa fa-map-marker"></i> 更新坐标</button>
                 @if($devMode)
-                <button class="layui-btn layui-btn-warm" id="updateCoordBtn" title="开发模式：按百度地图地址解析结果更新单个区划坐标"><i class="fa fa-map-marker"></i> 更新坐标</button>
                 {{-- 旧版数据更新：点击展开面板，收纳原「一键导入 / 一键数据更新 / 清除缓存 / 更新数据」；前两项保留悬停二级单项入口 --}}
                 <div class="legacy-wrap">
                     <button class="layui-btn layui-btn-primary" id="legacyUpdateBtn"><i class="fa fa-history"></i> 旧版数据更新 <i class="fa fa-caret-down"></i></button>
@@ -290,8 +290,8 @@
 
 <script src="{{ asset('CmsProUi/component/layui/layui.js') }}"></script>
 <script src="{{ asset('CmsProUi/component/pear/pear.js') }}"></script>
-@if($devMode && $baiduAk)
-{{-- 开发模式「更新坐标」：百度地图 JSAPI，AK 取自「应用设置」生效配置，其次回退「地图」应用 --}}
+@if($baiduAk)
+{{-- 「更新坐标」：百度地图 JSAPI，AK 取自「应用设置」生效配置，其次回退「地图」应用 --}}
 <script>window.__bmapApiReady = false; function onBMapApiReady(){ window.__bmapApiReady = true; }</script>
 <script src="https://api.map.baidu.com/api?v=4.0&ak={{ $baiduAk }}&callback=onBMapApiReady"></script>
 @endif
@@ -492,8 +492,8 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
         }
     }
 
-    // ==================== 更新坐标（开发模式） ====================
-    // 依赖百度地图 JS AK（「应用设置」生效配置优先，其次「地图」应用），仅在 APP_DEV_MODE=true 时渲染入口
+    // ==================== 更新坐标 ====================
+    // 依赖百度地图 JS AK（「应用设置」生效配置优先，其次「地图」应用）
     var coordPlaceholders = ['', '省/直辖市', '市', '区/县', '街道/乡镇', '村/社区'];
     // 单个更新级联最大层级（含村/社区）
     var coordMaxDepth = 5;
@@ -1158,7 +1158,7 @@ layui.use(['table', 'form', 'layer', 'jquery', 'element'], function(){
 
         layer.open({
             type: 1,
-            title: '更新坐标（开发模式）',
+            title: '更新坐标',
             area: ['900px', 'auto'],
             shadeClose: false,
             content: html,

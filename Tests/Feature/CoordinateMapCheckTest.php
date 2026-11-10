@@ -8,7 +8,7 @@ use App\Models\ConfigGroup;
 /**
  * 数据管理页「更新坐标」前置检测测试
  *
- * 覆盖：非开发模式不渲染入口；开发模式下按「应用设置」的四种状态
+ * 覆盖：入口不依赖开发模式（非开发模式同样渲染）；按「应用设置」的四种状态
  *       （配置组未注册 / 未启用地图 / 生效厂商非百度 / 未填密钥 / 已配置百度 AK）
  *       输出对应的缺失原因与百度 JSAPI 加载开关。
  */
@@ -50,15 +50,15 @@ class CoordinateMapCheckTest extends RegionTestCase
             ->assertSee('var coordMapTip = ' . $encoded . ';', false);
     }
 
-    public function test_非开发模式不渲染更新坐标入口(): void
+    public function test_非开发模式也渲染更新坐标入口(): void
     {
         config(['app.dev_mode' => false]);
 
         $this->asAdmin()
             ->get('/admin/cmspro/region')
             ->assertOk()
-            ->assertDontSee('id="updateCoordBtn"', false)
-            ->assertSee('var coordMapTip = "";', false);
+            ->assertSee('id="updateCoordBtn"', false)
+            ->assertDontSee('id="legacyUpdateBtn"', false);
     }
 
     public function test_配置组未注册时提示升级应用(): void
