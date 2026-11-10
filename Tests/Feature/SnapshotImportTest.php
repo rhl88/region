@@ -97,6 +97,34 @@ class SnapshotImportTest extends RegionTestCase
         RegionClosure::create(['ancestor' => $old->id, 'descendant' => $old->id, 'depth' => 0]);
     }
 
+    /**
+     * 上传快照包并返回终态进度。
+     *
+     * 导入接口已改为「立即返回进度令牌 + 后台执行」，结果与错误信息统一从
+     * sync-progress 轮询获取；测试环境 runInBackground 同步执行，POST 返回时任务已完成。
+     *
+     * @return array{state:string,percent:int,stage:string,message:string}
+     */
+    private function runImport(UploadedFile $file): array
+    {
+        $token = 'import_test_' . uniqid();
+
+        $this->asAdmin()
+            ->postJson('/api/admin/cmspro/region/import-snapshot', [
+                'file' => $file,
+                'progress_token' => $token,
+            ])
+            ->assertOk()
+            ->assertJsonPath('code', 0)
+            ->assertJsonPath('data.started', true)
+            ->assertJsonPath('data.progress_token', $token);
+
+        return (array) $this->asAdmin()
+            ->getJson('/api/admin/cmspro/region/sync-progress?progress_token=' . $token)
+            ->assertOk()
+            ->json('data');
+    }
+
     public function test_未登录访问导入接口被拦截(): void
     {
         $this->postJson('/api/admin/cmspro/region/import-snapshot')->assertUnauthorized();
@@ -127,12 +155,9 @@ class SnapshotImportTest extends RegionTestCase
         $zip->close();
         $this->tempFiles[] = $zipPath;
 
-        $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/import-snapshot', [
-                'file' => new UploadedFile($zipPath, 'empty.zip', 'application/zip', null, true),
-            ])
-            ->assertOk()
-            ->assertJson(['code' => 1]);
+        $progress = $this->runImport(new UploadedFile($zipPath, 'empty.zip', 'application/zip', null, true));
+        $this->assertSame('error', $progress['state']);
+        $this->assertStringContainsString('regions.json', (string) $progress['message']);
 
         $this->assertSame(2, Region::count());
         $this->assertSame(2, Region::where('code', 'like', '999%')->count());
@@ -147,12 +172,9 @@ class SnapshotImportTest extends RegionTestCase
             ['code' => '110101', 'name' => '东城区', 'level' => 3, 'parent_code' => '110100', 'status' => 1],
         ];
 
-        $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/import-snapshot', [
-                'file' => $this->buildSnapshotZip($badRegions),
-            ])
-            ->assertOk()
-            ->assertJson(['code' => 1]);
+        $progress = $this->runImport($this->buildSnapshotZip($badRegions));
+        $this->assertSame('error', $progress['state']);
+        $this->assertStringContainsString('不存在的上级编码', (string) $progress['message']);
 
         $this->assertSame(2, Region::count());
         $this->assertSame(2, Region::where('code', 'like', '999%')->count());
@@ -163,14 +185,9 @@ class SnapshotImportTest extends RegionTestCase
     {
         $this->seedLocalOldData();
 
-        $response = $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/import-snapshot', [
-                'file' => $this->buildSnapshotZip($this->sampleSnapshotRegions(), '20261106001'),
-            ]);
-
-        $response->assertOk()->assertJson(['code' => 0]);
-        $this->assertSame('20261106001', (string) $response->json('data.version'));
-        $this->assertSame(5, (int) $response->json('data.count'));
+        $progress = $this->runImport($this->buildSnapshotZip($this->sampleSnapshotRegions(), '20261106001'));
+        $this->assertSame('done', $progress['state'], '导入未完成');
+        $this->assertSame(100, $progress['percent']);
 
         // 全量替换：旧数据消失，新数据按契约写入
         $this->assertSame(0, Region::where('code', 'like', '999%')->count());
@@ -202,19 +219,11 @@ class SnapshotImportTest extends RegionTestCase
 
     public function test_导入_无meta_json时版本号回退snapshot前缀(): void
     {
-        $response = $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/import-snapshot', [
-                'file' => $this->buildSnapshotZip($this->sampleSnapshotRegions(), null),
-            ]);
+        $progress = $this->runImport($this->buildSnapshotZip($this->sampleSnapshotRegions(), null));
+        $this->assertSame('done', $progress['state']);
 
-        $response->assertOk()->assertJson(['code' => 0]);
-
-        $version = (string) $response->json('data.version');
+        $version = (string) ConfigItem::where('code', 'app_cmspro_region_data_sync_version')->value('value');
         $this->assertMatchesRegularExpression('/^snapshot-\d{14}$/', $version);
-        $this->assertSame(
-            $version,
-            (string) ConfigItem::where('code', 'app_cmspro_region_data_sync_version')->value('value')
-        );
     }
 
     /**
@@ -248,11 +257,8 @@ class SnapshotImportTest extends RegionTestCase
         $sharedFile = new UploadedFile($exportedZipPath, basename($exportedZipPath), 'application/zip', null, true);
         $this->tempFiles[] = $exportedZipPath;
 
-        $importResponse = $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/import-snapshot', ['file' => $sharedFile]);
-
-        $importResponse->assertOk()->assertJson(['code' => 0]);
-        $this->assertSame('20261106001', (string) $importResponse->json('data.version'));
+        $progress = $this->runImport($sharedFile);
+        $this->assertSame('done', $progress['state']);
 
         // 数据完整还原：5 条记录 + 层级 + 闭包 + 版本号
         $this->assertSame(5, Region::count());
@@ -280,8 +286,11 @@ class SnapshotImportTest extends RegionTestCase
                 'progress_token' => $token,
             ])
             ->assertOk()
-            ->assertJson(['code' => 0]);
+            ->assertJsonPath('code', 0)
+            ->assertJsonPath('data.started', true)
+            ->assertJsonPath('data.progress_token', $token);
 
+        // 测试环境任务同步执行（真实环境为响应返回后后台执行），此处应读到终态 done/100
         $this->asAdmin()
             ->getJson('/api/admin/cmspro/region/sync-progress?progress_token=' . $token)
             ->assertOk()

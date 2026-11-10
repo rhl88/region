@@ -93,8 +93,10 @@ class RegionDataSyncTest extends RegionTestCase
 
     /**
      * 创建同步配置组与已同步版本项（模拟已安装站点执行过「升级」后的配置落库状态）。
+     *
+     * @param string $level 已同步数据级别，非空时一并落库（1.7.0 起新增配置项）
      */
-    private function seedSyncConfig(string $version = ''): void
+    private function seedSyncConfig(string $version = '', string $level = ''): void
     {
         $group = ConfigGroup::create([
             'name' => '数据同步设置',
@@ -114,6 +116,19 @@ class RegionDataSyncTest extends RegionTestCase
             'sort' => 0,
             'status' => Status::ENABLED,
         ]);
+
+        if ($level !== '') {
+            ConfigItem::create([
+                'group_id' => $group->id,
+                'name' => '已同步数据级别',
+                'code' => 'app_cmspro_region_data_sync_level',
+                'value' => $level,
+                'type' => 'text',
+                'tips' => '最近一次在线同步落库的最大级别（系统自动维护）',
+                'sort' => 0,
+                'status' => Status::ENABLED,
+            ]);
+        }
     }
 
     /**
@@ -130,6 +145,32 @@ class RegionDataSyncTest extends RegionTestCase
             'parent_id' => $old->id, 'status' => 1,
         ]);
         RegionClosure::create(['ancestor' => $old->id, 'descendant' => $old->id, 'depth' => 0]);
+    }
+
+    /**
+     * 触发同步并返回终态进度。
+     *
+     * 同步接口已改为「立即返回进度令牌 + 后台执行」，结果与错误信息统一从
+     * sync-progress 轮询获取；测试环境 runInBackground 同步执行，POST 返回时任务已完成。
+     *
+     * @return array{state:string,percent:int,stage:string,message:string}
+     */
+    private function runSync(array $payload = []): array
+    {
+        $token = 'sync_test_' . uniqid();
+
+        $this->asAdmin()
+            ->postJson('/api/admin/cmspro/region/sync-region-data', array_merge(['progress_token' => $token], $payload))
+            ->assertOk()
+            ->assertJson(['code' => 0])
+            ->assertJsonPath('data.started', true)
+            ->assertJsonPath('data.progress_token', $token);
+
+        return (array) $this->asAdmin()
+            ->getJson('/api/admin/cmspro/region/sync-progress?progress_token=' . $token)
+            ->assertOk()
+            ->assertJsonPath('code', 0)
+            ->json('data');
     }
 
     public function test_未登录访问同步接口被拦截(): void
@@ -211,12 +252,9 @@ class RegionDataSyncTest extends RegionTestCase
         $package = $this->buildRemotePackage($this->sampleRemoteRegions(), '20261106001');
         $this->fakeVersionServer($package, '20261106001');
 
-        $response = $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/sync-region-data', ['version' => null]);
-
-        $response->assertOk()->assertJson(['code' => 0]);
-        $this->assertTrue((bool) $response->json('data.synced'), '同步未执行');
-        $this->assertSame('20261106001', (string) $response->json('data.version'));
+        $progress = $this->runSync(['version' => null]);
+        $this->assertSame('done', $progress['state'], '同步未完成');
+        $this->assertSame(100, $progress['percent']);
 
         // 主表：全量替换（旧数据 999000/999001 消失，新数据 5 条按契约写入）
         $this->assertSame(0, Region::where('code', 'like', '999%')->count());
@@ -264,10 +302,9 @@ class RegionDataSyncTest extends RegionTestCase
         // latest 声明一个错误的 checksum（模拟传输损坏/被篡改）
         $this->fakeVersionServer($package, '20261106001', ['checksum' => str_repeat('0', 64)]);
 
-        $response = $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/sync-region-data');
-
-        $response->assertOk()->assertJson(['code' => 1]);
+        $progress = $this->runSync();
+        $this->assertSame('error', $progress['state']);
+        $this->assertStringContainsString('校验失败', (string) $progress['message']);
 
         // 原数据零影响：旧记录仍在，新数据未写入
         $this->assertSame(2, Region::count());
@@ -287,10 +324,9 @@ class RegionDataSyncTest extends RegionTestCase
         $package = $this->buildRemotePackage($badRegions, '20261106001');
         $this->fakeVersionServer($package, '20261106001');
 
-        $response = $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/sync-region-data');
-
-        $response->assertOk()->assertJson(['code' => 1]);
+        $progress = $this->runSync();
+        $this->assertSame('error', $progress['state']);
+        $this->assertStringContainsString('不存在的上级编码', (string) $progress['message']);
 
         $this->assertSame(2, Region::count());
         $this->assertSame(2, Region::where('code', 'like', '999%')->count());
@@ -298,19 +334,112 @@ class RegionDataSyncTest extends RegionTestCase
 
     public function test_同步_本地已是最新且未指定版本时跳过下载(): void
     {
-        $this->seedSyncConfig('20261106001');
+        // 已同步版本与级别均与官方一致（五级全量）才跳过下载
+        $this->seedSyncConfig('20261106001', '5');
 
         $package = $this->buildRemotePackage($this->sampleRemoteRegions(), '20261106001');
         $this->fakeVersionServer($package, '20261106001');
 
-        $response = $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/sync-region-data');
-
-        $response->assertOk()->assertJson(['code' => 0]);
-        $this->assertFalse((bool) $response->json('data.synced'), '版本相同应跳过同步');
+        $progress = $this->runSync();
+        $this->assertSame('done', $progress['state']);
+        $this->assertStringContainsString('无需同步', (string) $progress['message']);
 
         // 未触发下载请求（fake 记录请求序列：只有 latest，没有 download）
         Http::assertSentCount(1);
+    }
+
+    /**
+     * 同步级别裁剪（1.7.0）：指定 max_level=3 时深于三级的官方数据不落库，
+     * 落库级别写入 data_sync_level 并联动区划显示级别 region_max_level。
+     */
+    public function test_同步_按指定级别裁剪落库并联动显示级别(): void
+    {
+        $this->seedLocalOldData();
+        $this->seedSyncConfig('');
+
+        $package = $this->buildRemotePackage($this->sampleRemoteRegions(), '20261106001');
+        $this->fakeVersionServer($package, '20261106001');
+
+        $progress = $this->runSync(['max_level' => 3]);
+        $this->assertSame('done', $progress['state'], '同步未完成');
+
+        // 四级街道记录被裁剪，只落省/市/区县共 4 条
+        $this->assertSame(4, Region::count());
+        $this->assertDatabaseMissing('app_cmspro_region_region', ['code' => '110101001']);
+
+        // 闭包表只包含保留下来的记录：区县含自身 + 市 + 省共 3 条
+        $district = Region::where('code', '110101')->firstOrFail();
+        $this->assertSame(3, RegionClosure::where('descendant', $district->id)->count());
+
+        $this->assertSame(
+            '3',
+            (string) ConfigItem::where('code', 'app_cmspro_region_data_sync_level')->value('value')
+        );
+        // 联动演示页显示级别，使选择器与库中实际数据深度一致
+        $this->assertSame(
+            '3',
+            (string) ConfigItem::where('code', 'app_cmspro_region_region_max_level')->value('value')
+        );
+    }
+
+    /**
+     * 本地版本已是官方最新、但只同步到三级：请求五级时不得跳过下载，
+     * 允许在同一版本上补齐更深层级数据。
+     */
+    public function test_同步_本地已是最新但级别更浅时补齐深层数据(): void
+    {
+        $this->seedSyncConfig('20261106001', '3');
+
+        $package = $this->buildRemotePackage($this->sampleRemoteRegions(), '20261106001');
+        $this->fakeVersionServer($package, '20261106001');
+
+        $progress = $this->runSync(['max_level' => 5]);
+        $this->assertSame('done', $progress['state'], '同步未完成');
+        $this->assertStringNotContainsString('无需同步', (string) $progress['message']);
+
+        // 触发了下载（latest + download 各一次），五级数据全量落库
+        Http::assertSentCount(2);
+        $this->assertSame(5, Region::count());
+        $this->assertDatabaseHas('app_cmspro_region_region', ['code' => '110101001', 'level' => 4]);
+        $this->assertSame(
+            '5',
+            (string) ConfigItem::where('code', 'app_cmspro_region_data_sync_level')->value('value')
+        );
+    }
+
+    public function test_检查更新_返回本地已同步级别(): void
+    {
+        $package = $this->buildRemotePackage($this->sampleRemoteRegions(), '20261106001');
+        $this->fakeVersionServer($package, '20261106001');
+        $this->seedSyncConfig('20261106001', '3');
+
+        $this->asAdmin()
+            ->getJson('/api/admin/cmspro/region/sync-check-update')
+            ->assertOk()
+            ->assertJsonPath('data.local_level', 3)
+            ->assertJsonPath('data.need_update', false);
+    }
+
+    /**
+     * 同步级别只开放 3/4/5：更浅级别无实际意义，且全量替换语义下会清除既有深层数据，
+     * 非法值须在触发后台任务前直接拒绝。
+     */
+    public function test_同步接口_拒绝非法同步级别(): void
+    {
+        Http::fake();
+        $this->seedLocalOldData();
+
+        foreach ([2, 6, 'abc'] as $invalid) {
+            $this->asAdmin()
+                ->postJson('/api/admin/cmspro/region/sync-region-data', ['max_level' => $invalid])
+                ->assertOk()
+                ->assertJsonPath('code', 1)
+                ->assertJsonPath('message', '同步级别仅支持 3（区县）/4（街道）/5（村/社区）');
+        }
+
+        // 未触发任何下载与落库，本地数据零影响
+        Http::assertSentCount(0);
+        $this->assertSame(2, Region::count());
     }
 
     /**
@@ -325,10 +454,9 @@ class RegionDataSyncTest extends RegionTestCase
         $this->seedLocalOldData();
         $this->seedSyncConfig('20261107002'); // 本地为更高的先行修正版本
 
-        $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/sync-region-data', ['version' => null])
-            ->assertOk()
-            ->assertJsonPath('code', 1); // RuntimeException 被 catch 后以 code=1 返回
+        $progress = $this->runSync(['version' => null]);
+        $this->assertSame('error', $progress['state']);
+        $this->assertStringContainsString('已高于官方最新版本', (string) $progress['message']);
 
         // 本地数据零影响（未发生回退下载与全量替换）
         $this->assertSame(2, Region::count());
@@ -344,11 +472,8 @@ class RegionDataSyncTest extends RegionTestCase
         $package = $this->buildRemotePackage($this->sampleRemoteRegions(), '20261106001');
         $this->fakeVersionServer($package, '20261106001');
 
-        $response = $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/sync-region-data', ['version' => '20261106001']);
-
-        $response->assertOk()->assertJson(['code' => 0]);
-        $this->assertTrue((bool) $response->json('data.synced'));
+        $progress = $this->runSync(['version' => '20261106001']);
+        $this->assertSame('done', $progress['state']);
         $this->assertSame(5, Region::count());
 
         // 版本记录回退为指定版本
@@ -383,10 +508,8 @@ class RegionDataSyncTest extends RegionTestCase
         $package = $this->buildRemotePackage($this->sampleRemoteRegions(), '20261106001');
         $this->fakeVersionServer($package, '20261106001');
 
-        $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/sync-region-data')
-            ->assertOk()
-            ->assertJson(['code' => 0]);
+        $progress = $this->runSync();
+        $this->assertSame('done', $progress['state']);
 
         // 配置组被自动创建，版本号落库
         $this->assertSame(1, ConfigGroup::where('code', 'app_cmspro_region_sync_settings')->count());
@@ -425,9 +548,11 @@ class RegionDataSyncTest extends RegionTestCase
         $this->asAdmin()
             ->postJson('/api/admin/cmspro/region/sync-region-data', ['progress_token' => $token])
             ->assertOk()
-            ->assertJson(['code' => 0]);
+            ->assertJsonPath('code', 0)
+            ->assertJsonPath('data.started', true)
+            ->assertJsonPath('data.progress_token', $token);
 
-        // 同步为同步请求，返回时进度已推进到终态；轮询应读到 done/100
+        // 测试环境任务同步执行（真实环境为响应返回后后台执行），此处应读到终态 done/100
         $this->asAdmin()
             ->getJson('/api/admin/cmspro/region/sync-progress?progress_token=' . $token)
             ->assertOk()

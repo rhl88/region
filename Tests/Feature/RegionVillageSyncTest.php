@@ -124,11 +124,17 @@ class RegionVillageSyncTest extends RegionTestCase
         $package = $this->buildVillagePackage($this->sampleFiveLevelRegions());
         $this->fakeVersionServer($package);
 
-        $response = $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/sync-region-data', ['progress_token' => 'village_test']);
+        $token = 'village_test_' . uniqid();
+        $this->asAdmin()
+            ->postJson('/api/admin/cmspro/region/sync-region-data', ['progress_token' => $token])
+            ->assertOk()
+            ->assertJsonPath('data.started', true);
 
-        $response->assertOk()->assertJson(['code' => 0]);
-        $this->assertTrue((bool) $response->json('data.synced'), '五级同步未执行');
+        // 同步接口已改为后台执行，终态从 sync-progress 轮询获取（测试环境同步执行）
+        $this->asAdmin()
+            ->getJson('/api/admin/cmspro/region/sync-progress?progress_token=' . $token)
+            ->assertOk()
+            ->assertJsonPath('data.state', 'done');
         $this->assertSame(6, Region::count());
 
         // 村级编码（12 位）与层级
@@ -140,8 +146,8 @@ class RegionVillageSyncTest extends RegionTestCase
         // 村级 parent_code → parent_id：挂接 9 位街道编码对应记录
         $this->assertSame($street->id, $village->parent_id);
 
-        // 同步返回 stats 含村级计数
-        $this->assertSame(2, (int) $response->json('data.stats.village'));
+        // 落库后统计含村级计数
+        $this->assertSame(2, Region::where('level', Region::LEVEL_VILLAGE)->count());
     }
 
     public function test_五级同步_村级闭包记录为五条(): void
@@ -282,10 +288,16 @@ class RegionVillageSyncTest extends RegionTestCase
         $package = $this->buildVillagePackage($badRegions);
         $this->fakeVersionServer($package);
 
-        $response = $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/sync-region-data');
+        $token = 'village_bad_code_' . uniqid();
+        $this->asAdmin()
+            ->postJson('/api/admin/cmspro/region/sync-region-data', ['progress_token' => $token])
+            ->assertOk()
+            ->assertJsonPath('data.started', true);
 
-        $response->assertOk()->assertJson(['code' => 1]);
+        $this->asAdmin()
+            ->getJson('/api/admin/cmspro/region/sync-progress?progress_token=' . $token)
+            ->assertOk()
+            ->assertJsonPath('data.state', 'error');
 
         // 原数据零影响
         $this->assertSame(1, Region::count());
@@ -307,10 +319,16 @@ class RegionVillageSyncTest extends RegionTestCase
         $package = $this->buildVillagePackage($badRegions);
         $this->fakeVersionServer($package);
 
-        $response = $this->asAdmin()
-            ->postJson('/api/admin/cmspro/region/sync-region-data');
+        $token = 'village_orphan_' . uniqid();
+        $this->asAdmin()
+            ->postJson('/api/admin/cmspro/region/sync-region-data', ['progress_token' => $token])
+            ->assertOk()
+            ->assertJsonPath('data.started', true);
 
-        $response->assertOk()->assertJson(['code' => 1]);
+        $this->asAdmin()
+            ->getJson('/api/admin/cmspro/region/sync-progress?progress_token=' . $token)
+            ->assertOk()
+            ->assertJsonPath('data.state', 'error');
 
         // 原数据零影响：旧记录仍在，村级未写入
         $this->assertSame(1, Region::count());
